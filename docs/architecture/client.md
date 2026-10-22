@@ -467,3 +467,32 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   through `editSpawn` as an undo step, as `SpawnFields` does; the template's restock time (`data2`)
   only counts for a chest that isn't taken when looted.
 - Integration test: `WOW_DIR=/path/to/client go test ./internal/wow/ -v`.
+
+## LyraCore realms (SpacetimeDB)
+
+[LyraCore](https://github.com/LyraCoreProject/LyraCore) is a 1.12.1 server whose whole world (spawns,
+templates, terrain, collision, players) lives in SpacetimeDB databases. Meld can use one in place of a
+VMaNGOS world database: Preferences › LyraCore Realm… (`LyraCoreDialog.svelte`, bindings `LyraCore` and
+`SetLyraCore` in `app_lyracore.go`) saves `config.LyraCore` (the SpacetimeDB URL, a database owner's
+token, the default database and the gateway's `LYRACORE_SHARD_MAP`). With a URL set, it wins over
+`VmangosPath` for what it covers.
+
+- `internal/stdb` is the HTTP client: `SQL`/`Query` (`POST /v1/database/<db>/sql`, rows as raw JSON so
+  a u64 stays exact; `Table.Each` reads them by column) and `Call` (`/call/<reducer>`, the arguments
+  as a JSON array). Its SQL has no `IN` and no joins: lookups are OR-chained in batches
+  (`lyraLookup`, 150 keys).
+- `internal/lyracore` is the realm: `Realm.Database(map)` routes a map to its shard (one realm spans
+  several databases, such as `lyracore` for map 0 and `lyracore-world-1` for map 1), and the guid
+  helpers. A LyraCore guid is packed (`0xF130<<48 | entry<<24 | spawn id` for a creature,
+  `0xF110<<48 | spawn id` for an object) and needs 64 bits; Meld's `guid` is the low 48 bits
+  (`LowGUID`), an exact JavaScript number, and `CreatureGUID`/`ObjectGUID` add the high part back.
+- `vmangos.ReadLyraSpawns` (`LoadSpawns` with a realm set) reads `game_creature_spawn` and
+  `game_gameobject` rows of instance 0 in the region's bounds, their templates
+  (`game_creature_template`, `game_gameobject_template`) and the creatures' patrols
+  (`game_creature_waypoint`, in id order; a creature with points shows as movement type 2). The map ID
+  comes from the client's Map.dbc (`clientMapID`). LyraCore has no equipment, addon pose, events, pools
+  or formations, so those stay empty.
+- The realm's SpacetimeDB listens on the realm machine's loopback, so Meld reaches it through an SSH
+  tunnel (on the dev machine, the user unit `lyracore-tunnel.service`: local `127.0.0.1:3300` to the
+  server's `127.0.0.1:3000`). The owner token is `spacetimedb_token` in the `lyracore` user's
+  `~/.config/spacetime/cli.toml` on the realm machine.

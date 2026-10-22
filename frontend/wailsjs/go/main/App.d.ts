@@ -156,6 +156,8 @@ export function LoadSpawns(arg1:string,arg2:number,arg3:number,arg4:number):Prom
 
 export function LoadingScreens():Promise<Array<vmangos.LoadingScreen>>;
 
+export function LyraCore():Promise<main.LyraCoreInfo>;
+
 export function MapEntries():Promise<Array<vmangos.MapEntry>>;
 
 export function MapLights(arg1:number):Promise<vmangos.MapLights>;
@@ -359,6 +361,8 @@ export function SetGameClient(arg1:string):Promise<void>;
 export function SetGameLogin(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function SetGameWindow(arg1:string,arg2:string):Promise<void>;
+
+export function SetLyraCore(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function SetUnsaved(arg1:boolean):Promise<void>;
 

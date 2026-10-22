@@ -283,6 +283,24 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class LyraCoreInfo {
+	    url: string;
+	    database: string;
+	    shards: string;
+	    hasToken: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LyraCoreInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.database = source["database"];
+	        this.shards = source["shards"];
+	        this.hasToken = source["hasToken"];
+	    }
+	}
 	export class PrefabFile {
 	    name: string;
 	    text: string;

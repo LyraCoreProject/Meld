@@ -7,6 +7,7 @@
   import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
   import Modal from './Modal.svelte'
   import GameLoginDialog from './GameLoginDialog.svelte'
+  import LyraCoreDialog from './LyraCoreDialog.svelte'
   import ProjectDialog from './ProjectDialog.svelte'
   import MapPropertiesDialog from './MapPropertiesDialog.svelte'
   import GroundEffectsDialog from './GroundEffectsDialog.svelte'
@@ -417,6 +418,8 @@
   </Modal>
 {:else if ui.dialog === 'gameLogin'}
   <GameLoginDialog />
+{:else if ui.dialog === 'lyracore'}
+  <LyraCoreDialog />
 {:else if ui.dialog === 'recovery'}
   <RecoveryDialog onclose={close} />
 {:else if ui.dialog === 'fitGround'}

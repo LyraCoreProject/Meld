@@ -15,6 +15,10 @@ type Config struct {
 	WowPath string `json:"wowPath"`
 	// VmangosPath is the VMaNGOS server folder that map patches and SQL are written for.
 	VmangosPath string `json:"vmangosPath,omitempty"`
+	// LyraCore is a LyraCore realm's SpacetimeDB that spawns are read from and written to instead of
+	// a VMaNGOS world database; its URL empty for none. It takes the place of VmangosPath's database
+	// when set.
+	LyraCore LyraCore `json:"lyracore,omitempty"`
 	// Login is the account a region export logs the game back in with. The password is stored in
 	// plain text, so this is for a local dev setup only.
 	Login Login `json:"login,omitempty"`
@@ -42,6 +46,16 @@ type Window struct {
 	Width     int  `json:"width,omitempty"`
 	Height    int  `json:"height,omitempty"`
 	Maximised bool `json:"maximised,omitempty"`
+}
+
+// LyraCore is how Meld reaches a LyraCore realm (lyracore.Settings): its SpacetimeDB server's URL,
+// a database owner's token (stored in plain text, like Login's password), the database of the maps
+// the shard map leaves out, and the gateway's LYRACORE_SHARD_MAP.
+type LyraCore struct {
+	URL      string `json:"url,omitempty"`
+	Token    string `json:"token,omitempty"`
+	Database string `json:"database,omitempty"`
+	Shards   string `json:"shards,omitempty"`
 }
 
 // Login is a game account to log in with after a region export.

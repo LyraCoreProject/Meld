@@ -547,6 +547,7 @@
 			items: [
 				{ kind: 'action', label: wow.loaded ? 'Change WoW Client Folder…' : 'Select WoW Client Folder…', disabled: !hasBackend(), run: chooseWowFolder },
 				{ kind: 'action', label: 'VMaNGOS Server Folder…', disabled: !hasBackend(), run: chooseVmangosFolder },
+				{ kind: 'action', label: 'LyraCore Realm…', disabled: !hasBackend(), run: () => (ui.dialog = 'lyracore') },
 				{ kind: 'action', label: 'Clear Thumbnail Cache', disabled: !wow.loaded, run: clearThumbs },
 				{ kind: 'check', label: 'Check the Map before Compile (stop on errors)', checked: prefs.checkBeforeCompile, toggle: () => (prefs.checkBeforeCompile = !prefs.checkBeforeCompile) },
 				{ kind: 'header', label: 'Autosave unsaved maps' },

@@ -770,8 +770,19 @@ func (a *App) Areas() ([]vmangos.Area, error) {
 }
 
 // LoadSpawns reads the creatures and game objects the server's world database places in a block of
-// tiles. It needs the VMaNGOS server folder, and the server's database running.
+// tiles. It needs the VMaNGOS server folder, and the server's database running, or else a LyraCore
+// realm, whose SpacetimeDB it reads instead when one is set.
 func (a *App) LoadSpawns(mapName string, x, y, size int) ([]vmangos.WorldSpawn, error) {
+	if realm, err := a.lyraRealm(); err != nil || realm != nil {
+		if err != nil {
+			return nil, err
+		}
+		dataDir, err := a.clientDataDir()
+		if err != nil {
+			return nil, err
+		}
+		return vmangos.ReadLyraSpawns(realm, dataDir, mapName, x, y, size)
+	}
 	a.cfgMu.Lock()
 	server := a.cfg.VmangosPath
 	a.cfgMu.Unlock()

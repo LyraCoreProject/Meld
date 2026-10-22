@@ -298,6 +298,10 @@ export function LoadingScreens() {
   return window['go']['main']['App']['LoadingScreens']();
 }
 
+export function LyraCore() {
+  return window['go']['main']['App']['LyraCore']();
+}
+
 export function MapEntries() {
   return window['go']['main']['App']['MapEntries']();
 }
@@ -704,6 +708,10 @@ export function SetGameLogin(arg1, arg2, arg3) {
 
 export function SetGameWindow(arg1, arg2) {
   return window['go']['main']['App']['SetGameWindow'](arg1, arg2);
+}
+
+export function SetLyraCore(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SetLyraCore'](arg1, arg2, arg3, arg4);
 }
 
 export function SetUnsaved(arg1) {
