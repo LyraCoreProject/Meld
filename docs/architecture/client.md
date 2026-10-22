@@ -496,3 +496,6 @@ token, the default database and the gateway's `LYRACORE_SHARD_MAP`). With a URL 
   tunnel (on the dev machine, the user unit `lyracore-tunnel.service`: local `127.0.0.1:3300` to the
   server's `127.0.0.1:3000`). The owner token is `spacetimedb_token` in the `lyracore` user's
   `~/.config/spacetime/cli.toml` on the realm machine.
+- Saving spawn edits to a realm is not built yet: LyraCore has no reducer that changes one spawn and
+  takes its live entity along (a SQL delete leaves the creature in the world, a move shows only after
+  a respawn). The editor reducers Meld would call are proposed in LyraCoreProject/LyraCore#757.
