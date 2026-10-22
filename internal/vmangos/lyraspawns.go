@@ -40,7 +40,9 @@ func ReadLyraSpawns(realm *lyracore.Realm, dataDir, mapName string, x, y, size i
 	yLo, yHi := zp-float64(x+size)*t, zp-float64(x)*t
 	bounds := fmt.Sprintf("map_id = %d AND instance_id = 0 AND x >= %f AND x <= %f AND y >= %f AND y <= %f", mapID, xLo, xHi, yLo, yHi)
 
-	creatures, err := realm.DB.Query(db, "SELECT * FROM game_creature_spawn WHERE "+bounds)
+	// A row with a source_guid is the live copy a population spawn makes of itself with the entry it
+	// drew (pass_respawn in LyraCore's lifecycle.rs), not a spawn of its own.
+	creatures, err := realm.DB.Query(db, "SELECT * FROM game_creature_spawn WHERE "+bounds+" AND source_guid = 0")
 	if err != nil {
 		return nil, err
 	}
