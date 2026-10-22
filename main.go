@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"net/http"
+	"os"
 	"strings"
 
 	"Meld/internal/handoff"
@@ -37,6 +38,10 @@ func main() {
 		MinWidth:         1024,
 		MinHeight:        640,
 		WindowStartState: state,
+		// MELD_HEADLESS=1 (a machine with no screen, where the editor is used from a browser on the dev
+		// server's page): the window never shows, so its page stays hidden and WebKit runs none of its
+		// animation frames, rather than drawing the whole editor in software for no one.
+		StartHidden: os.Getenv("MELD_HEADLESS") == "1",
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 			// /wow/* is served from the user's local WoW client (see internal/wow).

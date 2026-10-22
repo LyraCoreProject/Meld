@@ -290,3 +290,8 @@ These are repeated from the docs above, since breaking one breaks things far fro
 - Linux/Wayland: `env_linux.go` sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Without it, WebKitGTK
   crashes with "Error 71 (Protocol error)" on this KDE Wayland machine.
 - Windows uses WebView2 (Chromium) and has no cgo requirement, so it cross-compiles from Linux.
+- Headless Linux (no screen; the editor used from a browser on `make dev`'s page): run with
+  `MELD_HEADLESS=1`. The Wails window then starts hidden, so WebKit runs no animation frames; shown, it
+  draws the whole editor uncapped and in software (GTK's Broadway backend has no GL), about a CPU core
+  for nothing. On the dev laptop the user unit `meld-dev.service` sets it and caps the service
+  (`CPUQuota=150%`, `MemoryMax=4G`): idle after startup it measured 0% CPU.
