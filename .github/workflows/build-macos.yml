@@ -1,0 +1,43 @@
+# Builds Meld.app for macOS (one universal binary: Apple Silicon and Intel) on a macOS runner, since a Wails app
+# for macOS links Apple's frameworks and can only be built on a Mac. Run it by hand (Actions › Build macOS › Run
+# workflow) or by pushing a tag; the app comes out as the workflow run's artifact Meld-macos.zip.
+#
+# The app is not signed with a developer certificate or notarised: macOS blocks it on first open. Clear the
+# quarantine flag once (xattr -dr com.apple.quarantine Meld.app) or open it with right-click › Open.
+name: Build macOS
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install the Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+
+      - name: Build Meld.app
+        run: wails build -platform darwin/universal -clean
+
+      # A universal binary loses the linker's ad-hoc signature when its halves are joined, and Apple Silicon
+      # refuses to run an unsigned binary, so sign the bundle ad hoc again.
+      - name: Sign ad hoc
+        run: codesign --force --deep --sign - build/bin/Meld.app
+
+      - name: Zip the app
+        run: ditto -c -k --keepParent build/bin/Meld.app Meld-macos.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Meld-macos
+          path: Meld-macos.zip

@@ -295,3 +295,7 @@ These are repeated from the docs above, since breaking one breaks things far fro
   draws the whole editor uncapped and in software (GTK's Broadway backend has no GL), about a CPU core
   for nothing. On the dev laptop the user unit `meld-dev.service` sets it and caps the service
   (`CPUQuota=150%`, `MemoryMax=4G`): idle after startup it measured 0% CPU.
+- macOS: Meld builds as a universal `Meld.app` through `.github/workflows/build-macos.yml` (run by hand or
+  on a `v*` tag; the app is the run's `Meld-macos` artifact). It can't be built on Linux: a Wails app for
+  macOS links Apple's frameworks, whose SDK is only licensed for Macs. The app is signed ad hoc, not
+  notarised, so macOS blocks its first open (`xattr -dr com.apple.quarantine Meld.app`).
