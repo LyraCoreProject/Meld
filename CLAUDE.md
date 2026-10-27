@@ -3,6 +3,17 @@
 Meld: a 3D world/map editor (WoW/WC3-editor style). Desktop app built with Wails v2 (Go) and a
 Svelte 5 + TypeScript + Three.js frontend. It must stay **fast** and build on **Windows and Linux**.
 
+## This fork
+
+This is `LyraCoreProject/Meld`, LyraCore's fork of `Coldensjo/Meld`. Its `lyracore` branch is
+upstream's `main` plus LyraCore's World Editor support (docs/architecture/client.md, LyraCore
+realms), and `lyracore editor` in LyraCore builds the commit LyraCore pins in `.lyracore-editor-rev`.
+
+- Commit LyraCore work to `lyracore` and push it to this fork, never to `Coldensjo/Meld`.
+- Take upstream's changes by merging `Coldensjo/Meld`'s `main` into `lyracore`.
+- File LyraCore work as issues on `LyraCoreProject/LyraCore`. The backlog, labels and owner pings
+  below are upstream's, for work on `Coldensjo/Meld`.
+
 ## Git workflow
 
 - Commit as soon as a feature is finished. Do not wait to be asked.
