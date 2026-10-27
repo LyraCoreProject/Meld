@@ -17,7 +17,14 @@
 	}
 	let { f, value, changed, onset }: Props = $props()
 
-	const ids = $derived([...new Set(value.split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 0))])
+	const ids = $derived([
+		...new Set(
+			value
+				.split(/\s+/)
+				.map(Number)
+				.filter((n) => Number.isInteger(n) && n > 0),
+		),
+	])
 	// null while a spell loads, false when the client has none.
 	let spells = $state<Array<{ id: number; ref: vmangos.SpellRef | null | false }>>([])
 	$effect(() => {
@@ -96,7 +103,7 @@
 	}
 	button.on {
 		background: var(--accent);
-		color: #fff;
+		color: var(--accent-ink);
 	}
 	.find {
 		padding: 6px;

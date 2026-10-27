@@ -1,4 +1,6 @@
 // The terrain's cell texture (#394), and the Map data overlay redrawn by rect (#530): the Map data tool's no-tufts overlay (its red) and a free-form area's outline (its green) share one sampler and draw together without either clobbering the other, and the terrain shader leaves a texture unit free with the sun's two shadow cascades and three lamp shadow maps.
+// touches: frontend/src/lib/terrain/TerrainMaterial.ts, frontend/src/lib/terrain/Terrain.ts, frontend/src/lib/tools/MapDataTool.ts, frontend/src/lib/state/areaSelection.ts, frontend/src/lib/terrain/areaShape.ts
+// tier: smoke
 const e = P.e
 const { editor, ui } = await P.state()
 const { setAreaCells } = await P.app('/src/lib/state/areaSelection.ts')
@@ -18,7 +20,10 @@ c.yaw = 0
 await P.frames(4)
 /** The colour of the ground at shares (x, z) of the map, through the camera. */
 const at = (shot, x, z) => {
-	const v = c.target.clone().set(x * ws, 0, z * ws).project(e.camera)
+	const v = c.target
+		.clone()
+		.set(x * ws, 0, z * ws)
+		.project(e.camera)
 	const px = Math.floor(((v.x + 1) / 2) * shot.w)
 	const row = Math.floor(((v.y + 1) / 2) * shot.h)
 	const i = (row * shot.w + px) * 4
@@ -44,8 +49,7 @@ const overlay = spots(await P.shot())
 
 // An L-shaped area on the right half: its rect's top-right quarter is not in it.
 const cells = new Uint8Array(n * n)
-for (let z = Math.floor(n * 0.3); z < Math.floor(n * 0.7); z++)
-	for (let x = Math.floor(n * 0.55); x < Math.floor(n * 0.9); x++) if (!(x >= n * 0.72 && z < n * 0.5)) cells[z * n + x] = INSIDE
+for (let z = Math.floor(n * 0.3); z < Math.floor(n * 0.7); z++) for (let x = Math.floor(n * 0.55); x < Math.floor(n * 0.9); x++) if (!(x >= n * 0.72 && z < n * 0.5)) cells[z * n + x] = INSIDE
 setAreaCells(t, n, cells)
 await P.frames(2)
 const both = spots(await P.shot())
@@ -69,6 +73,15 @@ t.touchChunkData(zone)
 await P.frames(2)
 const zoned = spots(await P.shot())
 const zoneDrawn = differs(zoned.patch, zoneBase.patch) && !differs(zoned.shape, zoneBase.shape)
+// The zone being painted is striped and stronger than the others (#714).
+editor.mapDataArea = 12
+editor.mapDataClear = false
+await P.frames(2)
+const chosen = spots(await P.shot())
+editor.mapDataArea = 0
+await P.frames(2)
+const unchosen = spots(await P.shot())
+const zoneMarked = differs(chosen.patch, unchosen.patch)
 editor.selection = null
 editor.tool = 'select'
 
@@ -98,12 +111,13 @@ const shapeDrawn = differs(both.shape, base.shape) && !differs(both.corner, base
 const patchKept = !differs(both.patch, overlay.patch)
 const patchCleared = !differs(cleared.patch, base.patch) && !differs(cleared.shape, both.shape)
 return {
-	ok: !!prog && overlayDrawn && shapeDrawn && patchKept && patchCleared && zoneDrawn && units <= 15,
+	ok: !!prog && overlayDrawn && shapeDrawn && patchKept && patchCleared && zoneDrawn && zoneMarked && units <= 15,
 	overlayDrawn,
 	shapeDrawn,
 	patchKept,
 	patchCleared,
 	zoneDrawn,
+	zoneMarked,
 	samplers: { own, shadowNow: shadow, withFiveShadowMaps: units, names },
 	colours: { base, overlay, both, cleared, zoneBase, zoned },
 }

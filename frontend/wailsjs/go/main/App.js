@@ -66,6 +66,10 @@ export function ClearThumbnailCache() {
   return window['go']['main']['App']['ClearThumbnailCache']();
 }
 
+export function ClientFilesWaiting() {
+  return window['go']['main']['App']['ClientFilesWaiting']();
+}
+
 export function CloseProject() {
   return window['go']['main']['App']['CloseProject']();
 }
@@ -102,6 +106,10 @@ export function DeleteQuest(arg1) {
   return window['go']['main']['App']['DeleteQuest'](arg1);
 }
 
+export function DeleteScript(arg1) {
+  return window['go']['main']['App']['DeleteScript'](arg1);
+}
+
 export function DropRecovery(arg1) {
   return window['go']['main']['App']['DropRecovery'](arg1);
 }
@@ -120,6 +128,10 @@ export function EndRecovery() {
 
 export function EquipBonuses() {
   return window['go']['main']['App']['EquipBonuses']();
+}
+
+export function EquipmentDisplays(arg1) {
+  return window['go']['main']['App']['EquipmentDisplays'](arg1);
 }
 
 export function EquipmentFor(arg1) {
@@ -206,6 +218,10 @@ export function ItemSets(arg1) {
   return window['go']['main']['App']['ItemSets'](arg1);
 }
 
+export function ItemTables() {
+  return window['go']['main']['App']['ItemTables']();
+}
+
 export function LaunchGame() {
   return window['go']['main']['App']['LaunchGame']();
 }
@@ -258,6 +274,10 @@ export function ListRecovery() {
   return window['go']['main']['App']['ListRecovery']();
 }
 
+export function ListScripts() {
+  return window['go']['main']['App']['ListScripts']();
+}
+
 export function ListSpells(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['ListSpells'](arg1, arg2, arg3, arg4);
 }
@@ -268,6 +288,10 @@ export function ListVisualEffects() {
 
 export function ListWeapons() {
   return window['go']['main']['App']['ListWeapons']();
+}
+
+export function LoadBaseRegionPaint(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['LoadBaseRegionPaint'](arg1, arg2, arg3, arg4);
 }
 
 export function LoadBuildingMap(arg1) {
@@ -288,6 +312,10 @@ export function LoadRecovery(arg1) {
 
 export function LoadRegion(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['LoadRegion'](arg1, arg2, arg3, arg4);
+}
+
+export function LoadScriptImage(arg1) {
+  return window['go']['main']['App']['LoadScriptImage'](arg1);
 }
 
 export function LoadSpawns(arg1, arg2, arg3, arg4) {
@@ -354,8 +382,16 @@ export function NextPoolEntry() {
   return window['go']['main']['App']['NextPoolEntry']();
 }
 
+export function ObjectDisplaySounds(arg1) {
+  return window['go']['main']['App']['ObjectDisplaySounds'](arg1);
+}
+
 export function ObjectModel(arg1) {
   return window['go']['main']['App']['ObjectModel'](arg1);
+}
+
+export function ObjectTables() {
+  return window['go']['main']['App']['ObjectTables']();
 }
 
 export function OpenBrushDialog() {
@@ -530,6 +566,10 @@ export function RegionInner(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['RegionInner'](arg1, arg2, arg3, arg4);
 }
 
+export function RegionMapID(arg1) {
+  return window['go']['main']['App']['RegionMapID'](arg1);
+}
+
 export function RegionPending(arg1) {
   return window['go']['main']['App']['RegionPending'](arg1);
 }
@@ -610,6 +650,10 @@ export function SaveObject(arg1, arg2, arg3) {
   return window['go']['main']['App']['SaveObject'](arg1, arg2, arg3);
 }
 
+export function SaveObjectDisplaySounds(arg1, arg2) {
+  return window['go']['main']['App']['SaveObjectDisplaySounds'](arg1, arg2);
+}
+
 export function SaveObjectLoot(arg1, arg2) {
   return window['go']['main']['App']['SaveObjectLoot'](arg1, arg2);
 }
@@ -654,6 +698,10 @@ export function SaveSceneMap(arg1) {
   return window['go']['main']['App']['SaveSceneMap'](arg1);
 }
 
+export function SaveScript(arg1, arg2) {
+  return window['go']['main']['App']['SaveScript'](arg1, arg2);
+}
+
 export function SaveSpell(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['SaveSpell'](arg1, arg2, arg3, arg4, arg5);
 }
@@ -674,6 +722,14 @@ export function SaveVendor(arg1, arg2) {
   return window['go']['main']['App']['SaveVendor'](arg1, arg2);
 }
 
+export function ScriptCommands(arg1, arg2) {
+  return window['go']['main']['App']['ScriptCommands'](arg1, arg2);
+}
+
+export function ScriptsFolder() {
+  return window['go']['main']['App']['ScriptsFolder']();
+}
+
 export function SearchCreatures(arg1) {
   return window['go']['main']['App']['SearchCreatures'](arg1);
 }
@@ -682,12 +738,20 @@ export function SearchItems(arg1) {
   return window['go']['main']['App']['SearchItems'](arg1);
 }
 
+export function SearchItemsSorted(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SearchItemsSorted'](arg1, arg2, arg3);
+}
+
 export function SearchQuests(arg1) {
   return window['go']['main']['App']['SearchQuests'](arg1);
 }
 
 export function SearchSpells(arg1) {
   return window['go']['main']['App']['SearchSpells'](arg1);
+}
+
+export function SearchWorldRefs(arg1, arg2) {
+  return window['go']['main']['App']['SearchWorldRefs'](arg1, arg2);
 }
 
 export function SessionLog() {
@@ -726,6 +790,10 @@ export function SetWowPath(arg1) {
   return window['go']['main']['App']['SetWowPath'](arg1);
 }
 
+export function SoundEntries() {
+  return window['go']['main']['App']['SoundEntries']();
+}
+
 export function SpawnEditSQL(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['SpawnEditSQL'](arg1, arg2, arg3, arg4, arg5);
 }
@@ -736,6 +804,10 @@ export function SpawnEmotes() {
 
 export function SpawnLook(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['SpawnLook'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function SpawnScripts(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SpawnScripts'](arg1, arg2, arg3);
 }
 
 export function SpawnTeleports(arg1, arg2, arg3) {
@@ -760,6 +832,10 @@ export function SpellTables() {
 
 export function SpellTexts(arg1) {
   return window['go']['main']['App']['SpellTexts'](arg1);
+}
+
+export function SpellsWithIcon(arg1) {
+  return window['go']['main']['App']['SpellsWithIcon'](arg1);
 }
 
 export function SpellsWithVisual(arg1) {
@@ -788,6 +864,14 @@ export function VmangosPath() {
 
 export function WMODoodadSets(arg1) {
   return window['go']['main']['App']['WMODoodadSets'](arg1);
+}
+
+export function WorldHorizon(arg1) {
+  return window['go']['main']['App']['WorldHorizon'](arg1);
+}
+
+export function WorldRefNames(arg1, arg2) {
+  return window['go']['main']['App']['WorldRefNames'](arg1, arg2);
 }
 
 export function WowStatus() {
@@ -822,8 +906,16 @@ export function WriteWorldMap(arg1) {
   return window['go']['main']['App']['WriteWorldMap'](arg1);
 }
 
+export function ZoneDoodads(arg1, arg2) {
+  return window['go']['main']['App']['ZoneDoodads'](arg1, arg2);
+}
+
 export function ZoneSounds() {
   return window['go']['main']['App']['ZoneSounds']();
+}
+
+export function ZoneTextures(arg1, arg2) {
+  return window['go']['main']['App']['ZoneTextures'](arg1, arg2);
 }
 
 export function ZoneWeather() {

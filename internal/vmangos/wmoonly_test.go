@@ -4,21 +4,18 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
-	"os"
 	"strings"
 	"testing"
 
 	"Meld/internal/mpq"
+	"Meld/internal/testclient"
 	"Meld/internal/wow"
 )
 
 // TestClientWMOOnlyWDT rebuilds Blackfathom Deeps' WDT (a WMO-only map) from its own building's
 // placement: the result is the client's file byte for byte. It needs WOW_DIR.
 func TestClientWMOOnlyWDT(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -62,13 +59,11 @@ func TestClientWMOOnlyWDT(t *testing.T) {
 }
 
 // TestExportWMOOnlyMap exports a map that is one of the client's buildings: the patch holds its WDT
-// with the global-WMO flag, the building's name and a placement with its bounds, and no tiles or WDL.
+// with the global-WMO flag, the building's name and a placement at the world's middle (0 on X and Z,
+// whatever its spot in the editor, #272) at its height, with its bounds round it, and no tiles or WDL.
 // It needs WOW_DIR.
 func TestExportWMOOnlyMap(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	readDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +88,7 @@ func TestExportWMOOnlyMap(t *testing.T) {
 	}
 	var flags uint32
 	var mwmo string
-	var lo, hi [3]float32
+	var pos, lo, hi [3]float32
 	for o := 0; o+8 <= len(wdt); {
 		id := string([]byte{wdt[o+3], wdt[o+2], wdt[o+1], wdt[o]})
 		size := int(binary.LittleEndian.Uint32(wdt[o+4:]))
@@ -105,14 +100,15 @@ func TestExportWMOOnlyMap(t *testing.T) {
 			mwmo = string(bytes.TrimRight(p, "\x00"))
 		case "MODF":
 			for k := 0; k < 3; k++ {
+				pos[k] = math.Float32frombits(binary.LittleEndian.Uint32(p[8+4*k:]))
 				lo[k] = math.Float32frombits(binary.LittleEndian.Uint32(p[32+4*k:]))
 				hi[k] = math.Float32frombits(binary.LittleEndian.Uint32(p[44+4*k:]))
 			}
 		}
 		o += 8 + size
 	}
-	if flags&1 == 0 || mwmo != name || hi[0]-lo[0] < 50 || lo[0] > 100 || hi[0] < 100 {
-		t.Fatalf("WDT flags %#x, building %q, bounds %v to %v", flags, mwmo, lo, hi)
+	if flags&1 == 0 || mwmo != name || pos != [3]float32{0, 20, 0} || hi[0]-lo[0] < 50 || lo[0] > 0 || hi[0] < 0 || lo[2] > 0 || hi[2] < 0 {
+		t.Fatalf("WDT flags %#x, building %q at %v, bounds %v to %v", flags, mwmo, pos, lo, hi)
 	}
 }
 
@@ -166,10 +162,7 @@ func TestGlobalBlock(t *testing.T) {
 // unchanged it writes nothing, a new doodad set writes the WDT with it, and moving the building or
 // adding a model is refused. It needs WOW_DIR.
 func TestClientWMOOnlyRegion(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)

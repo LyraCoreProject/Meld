@@ -1,5 +1,6 @@
 // The layer's cells for "objects near a point" (#512): on the everything benchmark map, the Clear tool's models under the brush, the Doodad brush's spacing neighbours and prop list, the Select brush and the area's objects match a scan of every object, after the models loaded (a building's box only then reaching wide) and after a move; prints the ms a call.
-const map = await P.benchMap('everything')
+// touches: frontend/src/lib/world/ObjectLayer.ts, frontend/src/lib/world/cellGrid.ts, frontend/src/lib/tools/ClearTool.ts, frontend/src/lib/tools/DoodadBrushTool.ts, frontend/src/lib/state/selection.ts
+const map = await P.loadBenchMap('everything')
 const e = P.e
 const L = e.objects
 const ctx = e.ctx
@@ -19,7 +20,10 @@ const clear = e.tools.clear
 const doodad = e.tools.doodad
 const xs = roots.map((o) => o.x)
 const zs = roots.map((o) => o.z)
-const minX = Math.min(...xs), maxX = Math.max(...xs), minZ = Math.min(...zs), maxZ = Math.max(...zs)
+const minX = Math.min(...xs),
+	maxX = Math.max(...xs),
+	minZ = Math.min(...zs),
+	maxZ = Math.max(...zs)
 const K = 120
 const hit = new V3()
 const spot = (i) => hit.set(minX + ((maxX - minX) * ((i * 7919) % K)) / K, 0, minZ + ((maxZ - minZ) * ((i * 104729) % K)) / K)
@@ -104,4 +108,4 @@ const per = (v) => Math.round((v / (2 * K)) * 1000) / 1000
 const wide = L.wide.size
 if (bad.length) throw new Error(`the cells and the scan differ: ${bad.slice(0, 8).join('; ')}`)
 if (!wide) throw new Error('no root reaches wide: the buildings should, once their models load')
-return { objects: L.objects.size, wide, found: Math.round(found / (2 * K)), msCall: { clear: per(ms.clear), gather: per(ms.gather), props: per(ms.props), rect: per(ms.rect) }, cpu: map.cpuMeanMs }
+return { objects: L.objects.size, wide, found: Math.round(found / (2 * K)), msCall: { clear: per(ms.clear), gather: per(ms.gather), props: per(ms.props), rect: per(ms.rect) } }

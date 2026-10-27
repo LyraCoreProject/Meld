@@ -11,6 +11,9 @@
 /** Item quality colours, as the game draws item names. */
 export const QUALITY_COLORS = ['#9d9d9d', '#ffffff', '#1eff00', '#0070dd', '#a335ee', '#ff8000', '#e6cc80']
 
+/** The same qualities for names on the page rather than in the tooltip: theme tokens (--q0 to --q6 in app.css), so white and grey stay readable on the light theme (#708). */
+export const QUALITY_VARS = QUALITY_COLORS.map((_, i) => `var(--q${i})`)
+
 /** One line of a tooltip: text on the left, optional text on the right, and how it is drawn. */
 export interface TooltipLine {
 	left: string
@@ -21,6 +24,8 @@ export interface TooltipLine {
 	title?: boolean
 	/** Meld's own line, not the game's (item level, sell price). */
 	extra?: boolean
+	/** A copper count drawn after `left` as coins (the sell price, #679). */
+	money?: number
 }
 
 /** Names the tooltip shows that the row only has as numbers; a line whose name is missing is left out. */
@@ -288,6 +293,6 @@ export function tooltipLines(row: Record<string, string>, known: TooltipNames = 
 	const item = n('item_level')
 	if (item > 0) out.push({ left: `Item Level ${item}`, color: DIM, extra: true })
 	const sell = n('sell_price')
-	if (sell > 0) out.push({ left: `Sell Price: ${money(sell)}`, extra: true })
+	if (sell > 0) out.push({ left: 'Sell Price:', money: sell, extra: true })
 	return out
 }

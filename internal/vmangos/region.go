@@ -1,6 +1,7 @@
 package vmangos
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -86,8 +87,8 @@ type RegionEdit struct {
 	// PartialLiquids says Liquids holds only some chunks' liquids (a map saved before maps kept
 	// them): chunks it has layers for are rewritten, and the rest keep the client's.
 	PartialLiquids bool `json:"partialLiquids"`
-	// Headers are the zones and impassable flags of the block's chunks, by block chunk index.
-	// Chunks not listed keep the client's.
+	// Headers are the zones, impassable flags, holes and baked shadows of the block's chunks, by block
+	// chunk index. Chunks not listed keep the client's, and so do the fields a header leaves unset.
 	Headers []HeaderSpec `json:"headers"`
 }
 
@@ -264,6 +265,59 @@ func ReadRegion(dataDir, mapName string, x, y, size int) (*RegionView, error) {
 	return view, nil
 }
 
+// ReadBaseRegionPaint reads the texture layers and alpha maps of the block's chunks as the client has
+// them without Meld's patch (BaseTileRoot, the tiles a compile compares the paint against), for Restore
+// the Client's Paint (#645): compiles before #526 left the patch's chunks at half the alpha resolution,
+// and a region read from the patch keeps them so. The view has Chunks and Alpha only, in ReadRegion's
+// order; a WMO-only map, or a tile only Meld's patch has (a new map), is an error.
+func ReadBaseRegionPaint(dataDir, mapName string, x, y, size int) (*RegionView, error) {
+	if err := checkRegion(x, y, size); err != nil {
+		return nil, err
+	}
+	set, err := mpq.OpenDataDir(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	defer set.Close()
+	wdt, err := set.ReadFile(fmt.Sprintf(`World\Maps\%s\%s.wdt`, mapName, mapName))
+	if err != nil {
+		return nil, err
+	}
+	if !wdtHasTiles(wdt) {
+		return nil, fmt.Errorf("%s is a single building with no ground to paint", mapName)
+	}
+	bigAlpha := adt.ReadBigAlpha(wdt)
+	view := &RegionView{MapName: mapName, X: x, Y: y, Size: size, Chunks: []ChunkView{}, Objects: []ObjectView{}, Liquids: []adt.Liquid{}}
+	for j := 0; j < size; j++ {
+		for i := 0; i < size; i++ {
+			tx, ty := x+i, y+j
+			root, err := readUnpatched(set, adt.TilePath(mapName, tx, ty, ""))
+			if err != nil {
+				return nil, fmt.Errorf("tile %d_%d is not in the client without Meld's patch: %w", tx, ty, err)
+			}
+			terrain, err := adt.ParseTerrain(root)
+			if err != nil {
+				return nil, fmt.Errorf("tile %d_%d: %w", tx, ty, err)
+			}
+			textures, err := adt.ParseTextures(root, bigAlpha, terrain)
+			if err != nil {
+				return nil, fmt.Errorf("tile %d_%d: %w", tx, ty, err)
+			}
+			for k, c := range terrain.Chunks {
+				cv := ChunkView{IndexX: c.IndexX + i*adt.ChunksPerTile, IndexY: c.IndexY + j*adt.ChunksPerTile, AreaID: c.AreaID}
+				for l, layer := range textures.Chunks[k].Layers {
+					cv.Layers = append(cv.Layers, LayerView{Texture: layer.Texture, Effect: layer.Effect})
+					if l > 0 {
+						view.Alpha = append(view.Alpha, textures.Chunks[k].Alpha[l-1]...)
+					}
+				}
+				view.Chunks = append(view.Chunks, cv)
+			}
+		}
+	}
+	return view, nil
+}
+
 // objectView converts a placement in a file to the block's coordinates (the block starts at tile
 // (x, y)). The editor's yaw is the file's middle rotation less 90 degrees, as objectIn writes it.
 func objectView(p adt.Placement, x, y int) (ObjectView, bool) {
@@ -271,14 +325,12 @@ func objectView(p adt.Placement, x, y int) (ObjectView, bool) {
 	if p.Kind != adt.M2 && p.Kind != adt.WMO {
 		return o, false
 	}
-	o.Type = modelType(p.Kind, p.Name, p.DoodadSet)
+	o.Type = adt.ModelType(p.Kind, p.Name, p.DoodadSet)
 	o.UID = p.UID
 	o.X = p.Position[0] - float32(x)*adt.TileSize
 	o.Y = p.Position[1]
 	o.Z = p.Position[2] - float32(y)*adt.TileSize
-	o.RotY = float32((float64(p.Rotation[1]) - 90) * math.Pi / 180)
-	o.TiltX = fromDegrees(p.Rotation[0])
-	o.TiltZ = fromDegrees(p.Rotation[2])
+	o.RotY, o.TiltX, o.TiltZ = p.EditorTurn()
 	o.Scale = p.Scale
 	return o, true
 }
@@ -321,11 +373,6 @@ const (
 // toDegrees converts a tilt in radians to the degrees a placement stores.
 func toDegrees(r float32) float32 {
 	return float32(float64(r) * 180 / math.Pi)
-}
-
-// fromDegrees converts a placement's stored degrees to a tilt in radians.
-func fromDegrees(d float32) float32 {
-	return float32(float64(d) * math.Pi / 180)
 }
 
 // angleDiff is the smallest difference between two angles in degrees.
@@ -400,7 +447,8 @@ func clampTile(i, size int) int {
 // taken out of every tile that listed it; and placements that were removed in the editor are dropped
 // from every tile that listed them. A tile outside the block that lists such a model, or that a moved or
 // added one now reaches, is written too, after the block's tiles, with only its placements changed
-// (#647). Painted chunks are rewritten from their weights; the rest keep the paint the client has.
+// (#647), and so is one beside the block whose border normals its heights move, with only those
+// changed (#666). Painted chunks are rewritten from their weights; the rest keep the paint the client has.
 // The map's WDL comes last, its block's horizon redrawn from the heights.
 func BuildRegion(dataDir string, e RegionEdit) ([]mpq.File, error) {
 	if err := checkRegion(e.X, e.Y, e.Size); err != nil {
@@ -736,16 +784,37 @@ func BuildRegion(dataDir string, e RegionEdit) ([]mpq.File, error) {
 		}
 	}
 
+	// The normals on each tile's border read the heights across it: the next tile's in the block, the
+	// client's beyond it (#492).
+	roots := make([][]byte, len(tiles))
+	for k := range tiles {
+		roots[k] = tiles[k].root
+	}
+	edges, beside, err := blockEdges(set, e.MapName, e.X, e.Y, e.Size, heights, roots)
+	if err != nil {
+		return nil, err
+	}
+	// The client's tiles beside the block whose normals along it the block's heights one in from its
+	// edge move get those normals redone, their heights and the rest of their bytes kept (#666).
+	normals := map[[2]int][]byte{}
+	for _, b := range beside {
+		terrain, err := adt.ParseTerrain(b.root)
+		if err != nil {
+			return nil, fmt.Errorf("tile %d_%d: %w", b.x, b.y, err)
+		}
+		root, err := adt.WriteHeights(b.root, terrain, &b.edges)
+		if err != nil {
+			return nil, fmt.Errorf("tile %d_%d: %w", b.x, b.y, err)
+		}
+		if !bytes.Equal(root, b.root) {
+			normals[[2]int{b.x, b.y}] = root
+		}
+	}
 	files := make([]mpq.File, 0, len(tiles))
 	for k := range tiles {
 		t := &tiles[k]
 		i, j := k%e.Size, k/e.Size
-		outer := make([]float32, LatticeSize*LatticeSize)
-		for r := 0; r < LatticeSize; r++ {
-			row := (j*tileCells+r)*side + i*tileCells
-			copy(outer[r*LatticeSize:(r+1)*LatticeSize], heights[row:row+LatticeSize])
-		}
-		patched, err := PatchTileHeights(t.root, outer)
+		patched, err := PatchTileHeights(t.root, blockTile(heights, side, i, j), &edges[k])
 		if err != nil {
 			return nil, err
 		}
@@ -756,21 +825,32 @@ func BuildRegion(dataDir string, e RegionEdit) ([]mpq.File, error) {
 		files = append(files, mpq.File{Name: t.name, Data: rewritten})
 	}
 	// The tiles outside the block that list a model as it no longer stands, or that a moved or added one
-	// now reaches, keep everything else as the client reads them now (#647).
+	// now reaches, keep everything else as the client reads them now (#647). One whose normals the save
+	// redoes too is written once, its placements changed over the new normals.
 	objs := make([]adt.Object, len(now))
 	for i, p := range now {
 		objs[i] = p.obj
 	}
 	for _, t := range outside {
-		ch, ok := t.changes(objs)
-		if !ok {
+		key := [2]int{t.x, t.y}
+		root, redone := normals[key]
+		if !redone {
+			root = t.root
+		}
+		delete(normals, key)
+		if ch, ok := t.changes(objs); ok {
+			if root, err = adt.Rewrite(root, ch); err != nil {
+				return nil, fmt.Errorf("tile %d_%d: %w", t.x, t.y, err)
+			}
+		} else if !redone {
 			continue
 		}
-		rewritten, err := adt.Rewrite(t.root, ch)
-		if err != nil {
-			return nil, fmt.Errorf("tile %d_%d: %w", t.x, t.y, err)
+		files = append(files, mpq.File{Name: t.name, Data: root})
+	}
+	for _, b := range beside {
+		if root, ok := normals[[2]int{b.x, b.y}]; ok {
+			files = append(files, mpq.File{Name: b.name, Data: root})
 		}
-		files = append(files, mpq.File{Name: t.name, Data: rewritten})
 	}
 	// The far horizon follows the new heights. A map without a WDL is left without one.
 	if b, err := set.ReadFile(wdlPath(e.MapName)); err == nil {
@@ -899,15 +979,27 @@ type RegionResult struct {
 	// Files is how many of the block's files (tiles, WDL, WDT) differ from the patch's copies: 0 means
 	// the client already has the block as the editor holds it.
 	Files int `json:"files"`
+	// Waiting says the written files wait for the game to close, which holds the patch open on
+	// Windows: Meld never closes it (#661).
+	Waiting bool `json:"waiting"`
 }
 
-// ClientMapID is the ID of a continent the client holds, by its folder name; ok is false for others.
-func ClientMapID(name string) (uint32, bool) {
-	switch strings.ToLower(name) {
-	case "azeroth":
-		return 0, true
-	case "kalimdor":
-		return 1, true
+// ClientMapID is the ID of the map the client's Map.dbc gives the folder name (case-insensitive); ok is
+// false for a folder the table lacks or when it cannot be read.
+func ClientMapID(dataDir, name string) (uint32, bool) {
+	entries, err := LoadMapEntries(dataDir)
+	if err != nil {
+		return 0, false
+	}
+	return mapIDByDir(entries, name)
+}
+
+// mapIDByDir finds the entry whose folder is name.
+func mapIDByDir(entries []MapEntry, name string) (uint32, bool) {
+	for _, e := range entries {
+		if strings.EqualFold(e.Dir, name) {
+			return e.ID, true
+		}
 	}
 	return 0, false
 }
@@ -956,7 +1048,7 @@ func RegionChanges(dataDir string, e RegionEdit) ([]mpq.File, RegionResult, erro
 		}
 	}
 	res.MapID = -1
-	if id, ok := ClientMapID(e.MapName); ok {
+	if id, ok := ClientMapID(dataDir, e.MapName); ok {
 		res.MapID = int(id)
 	}
 	for _, f := range changed {
@@ -965,14 +1057,4 @@ func RegionChanges(dataDir string, e RegionEdit) ([]mpq.File, RegionResult, erro
 		}
 	}
 	return changed, res, nil
-}
-
-// SaveRegion writes the edited block's changed files into the client's patch.
-func SaveRegion(dataDir string, e RegionEdit) (RegionResult, error) {
-	files, res, err := RegionChanges(dataDir, e)
-	if err != nil || len(files) == 0 {
-		return res, err
-	}
-	res.Patch, err = InstallPatch(dataDir, files)
-	return res, err
 }

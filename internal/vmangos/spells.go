@@ -112,30 +112,7 @@ type SpellRecord struct {
 
 // readSpellRow reads the row of spell entry the server uses.
 func readSpellRow(db worldDB, cols []TemplateColumn, entry int) (int, map[string]string, error) {
-	names := make([]string, len(cols))
-	for i, c := range cols {
-		names[i] = "`" + c.Name + "`"
-	}
-	raw, err := runSQL(db, fmt.Sprintf("SELECT `build`, %s FROM `spell_template` WHERE `entry` = %d AND `build` <= %d ORDER BY `build` DESC LIMIT 1",
-		strings.Join(names, ", "), entry, spellBuild))
-	if err != nil {
-		return 0, nil, err
-	}
-	line := strings.TrimRight(string(raw), "\r\n")
-	f := strings.Split(line, "\t")
-	if line == "" || len(f) != len(cols)+1 {
-		return 0, nil, fmt.Errorf("the world database has no spell %d", entry)
-	}
-	build, _ := strconv.Atoi(f[0])
-	values := make(map[string]string, len(cols))
-	for i, c := range cols {
-		v := f[i+1]
-		if v == "NULL" && c.Nullable {
-			v = ""
-		}
-		values[c.Name] = unescapeBatch(v)
-	}
-	return build, values, nil
+	return readKeyedRow(db, "spell_template", "build", fmt.Sprintf("`build` <= %d", spellBuild), cols, "spell", entry)
 }
 
 // ReadSpell reads spell entry: the spell_template row the server uses.
@@ -175,13 +152,13 @@ func spellField(c TemplateColumn, v string, high bool) (uint32, error) {
 	if c.Kind == "float" {
 		f, err := strconv.ParseFloat(v, 32)
 		if err != nil {
-			return 0, fmt.Errorf("%s must be a number, not %q", c.Name, v)
+			return 0, refuse(c.Name, "%s must be a number, not %q", c.Name, v)
 		}
 		return math.Float32bits(float32(f)), nil
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("%s must be a whole number, not %q", c.Name, v)
+		return 0, refuse(c.Name, "%s must be a whole number, not %q", c.Name, v)
 	}
 	if high {
 		return uint32(uint64(n) >> 32), nil
@@ -338,7 +315,7 @@ func PlanSpellSave(serverRoot, dataDir string, entry, build int, values map[stri
 		return SpellSave{}, err
 	}
 	if v, ok := values["name"]; ok && strings.TrimSpace(v) == "" {
-		return SpellSave{}, errors.New("a spell needs a name")
+		return SpellSave{}, refuse("name", "a spell needs a name")
 	}
 	set, err := mpq.OpenDataDir(dataDir)
 	if err != nil {
@@ -589,4 +566,62 @@ func SpellsWithVisual(dataDir string, visual, limit int) ([]SpellRef, error) {
 		out = append(out, spellRef(r))
 	}
 	return out, nil
+}
+
+// IconSpells is how spells use an icon (a name under Interface\Icons), for the Icons tool (#683): its
+// SpellIcon.dbc ID (0 when no row has it yet; the spell editor adds one when a spell first takes it),
+// how many of the client's spells show it, and up to a limit of them, one per name.
+type IconSpells struct {
+	SpellIconID int        `json:"spellIconId"`
+	Count       int        `json:"count"`
+	Spells      []SpellRef `json:"spells"`
+}
+
+// SpellsWithIcon lists how the client's spells use icon, at most limit of them by name.
+func SpellsWithIcon(dataDir, icon string, limit int) (IconSpells, error) {
+	spellData.Lock()
+	defer spellData.Unlock()
+	if err := loadSpellData(dataDir); err != nil {
+		return IconSpells{}, err
+	}
+	id, rows, count := spellsWithIcon(spellData.icons, spellData.spells, icon, limit)
+	out := IconSpells{SpellIconID: id, Count: count, Spells: make([]SpellRef, len(rows))}
+	for i, r := range rows {
+		out.Spells[i] = spellRef(r)
+	}
+	return out, nil
+}
+
+// spellsWithIcon finds icon's SpellIcon.dbc rows in icons (ID -> texture path), giving the lowest ID,
+// the Spell.dbc rows of up to limit spells (one per name) whose icon is any of them, and how many
+// spells show it in all.
+func spellsWithIcon(icons map[uint32]string, t *dbcTable, icon string, limit int) (int, []int, int) {
+	path := `Interface\Icons\` + icon
+	ids := map[uint32]bool{}
+	first := uint32(0)
+	for id, p := range icons {
+		if strings.EqualFold(p, path) {
+			ids[id] = true
+			if first == 0 || id < first {
+				first = id
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil, 0
+	}
+	seen := map[string]bool{}
+	var rows []int
+	count := 0
+	for r := 0; r < t.records; r++ {
+		if !ids[t.u32(r, spellFIcon)] {
+			continue
+		}
+		count++
+		if name := t.str(r, spellFName); !seen[name] && len(rows) < max(limit, 1) {
+			seen[name] = true
+			rows = append(rows, r)
+		}
+	}
+	return int(first), rows, count
 }

@@ -4,21 +4,33 @@ The ground, its paint and chunk data, the map file and the dialogs that make or 
 
 - `internal/mapfile`: the `.wmap` format is gzip(magic "WMAP" + version + JSON header + raw height
   float32 + weights + chunkSlots + holes + liquids + areaIds + chunkFlags + noEffect + shadows). Blobs
-  cross the bridge as base64 strings. If you change the format, bump `Version` and update the tests.
+  cross the bridge as base64 strings. If you change the format, bump `Version`, update the tests and add the new version's fixture
+  (`internal/mapfile/testdata`, `TestFixtures`, docs/tests/terrain.md).
+  Version 7 adds no blob: its header's `vmangos` may place a map made for the client on the 64×64
+  grid and leave tiles of its square out (`tileX`, `tileY`, `tiles`, #46; the Start dialog below), and
+  an older Meld refuses the file rather than publish such a map whole at the grid's corner.
   Older versions stay readable (a version 5 map has no shadows, a version 4 map no chunk data, a
   version 3 map no liquids blob, a version 2 map no holes blob either). Such a map opens with
-  `MapDocument.liquidsKnown` / `chunkDataKnown` false, and saved again it keeps saying so through the
-  header's optional `liquidsUnknown` / `chunkDataUnknown` (#525), since the blobs then hold only what
-  was drawn since and an empty one would otherwise read as "none" and erase the client's on Compile.
+  `MapDocument.holesKnown` / `liquidsKnown` / `chunkDataKnown` false, and saved again it keeps saying
+  so through the header's optional `holesUnknown` / `liquidsUnknown` / `chunkDataUnknown` (#525,
+  #663), since the blobs then hold only what was drawn since and an empty one would otherwise read as
+  "none" and erase the client's on Compile.
   The conversion to and from the bridge's `MapData` is `io/mapData.ts` (`toMapData`, `fromMapData`),
   kept free of the runes state so `tests/mapData.test.ts` can run it; Map Properties names what a
   region leaves to the client.
+  File › Save, Open and Revert are `io/mapio.ts`. The other file and client actions each have a module
+  of their own in `io/` (#534): `region.ts` (opening a block or a building, its spawns, growing it,
+  Teleport to destination, the world view, Restore the Client's Paint), `compile.ts` (the compiles,
+  `regionUncompiled`, the server map rebuild, Save Spawns), `images.ts`, `lists.ts` (object lists,
+  brushes, sets), `game.ts` (the client, Launch, Play Here) and `publish.ts`, all on `backend.ts`'s
+  `hasBackend` and `guarded`.
 
 - **Terrain** (`lib/terrain/Terrain.ts`):
-  - Heights are a `Float32Array` of `(size+1)^2` vertices; `CELL_SIZE` = 2 world units.
+  - Heights are a `Float32Array` of `(size+1)^2` vertices; `CELL_SIZE` = a tile's 1600/3 (533.33) yd over 128 cells = 4.1667 yd, for every map, new or read from the client.
   - The mesh is split into 32×32-cell chunks. Edits call `markDirty(rect)`, and `update()` rewrites
     only the touched chunks.
-  - Picking ray-marches the heightmap (`raycast`). Don't use triangle raycasts on the terrain.
+  - Picking ray-marches the heightmap (`raycast`, the march itself in `rayMarch.ts`). Don't use triangle raycasts on the terrain.
+    A ray passes through holes and, once below the surface through one, stays under until it is above the ground again (#528), so a slanted ray into a cave mouth does not hit the ground's underside at the rim.
   - **Holes**: `Terrain.holes` is one byte per cell (`terrain/holes.ts`). A hole cell gets no
     triangles (`writeChunk` rebuilds the chunk's index and draw range) and the ray passes through it.
     Holes are edited through `TerrainStroke({ holes: true })`, copied with the clipboard and saved in
@@ -75,6 +87,7 @@ The ground, its paint and chunk data, the map file and the dialogs that make or 
   chunk (the `Areas` binding lists them, `wow/areas.ts` names them) and `Terrain.chunkFlags` a byte
   per chunk (`CHUNK_IMPASSABLE`); both and `Terrain.noEffect` are read from a region, saved in the
   map file (version 5) and painted by the tool through `ChunkDataStroke` (one undo step a stroke).
+  Area mode tints each zone in its colour with the chunk edges drawn, and stripes the chunks of the zone being painted (`Terrain.setMapDataZone`, uniform `mapDataZone`, #714); the status line names the zone and the chunks reached.
   The tool draws its overlay through `Terrain.setMapDataOverlay`: a texel per chunk (`chunkDataTex`)
   and the no-tufts cells in the red of `Terrain.cellTex`, a texel per cell whose green is the selected
   area's shape (`Terrain.setAreaShape`), shared so the shader spends one sampler on both (#394).
@@ -82,7 +95,11 @@ The ground, its paint and chunk data, the map file and the dialogs that make or 
   and `Terrain.update` rewrites and uploads just those texels (#530); an undo or a paste marks all of it. The export sends every chunk's
   `HeaderSpec` (`TileSpec.Headers`, `RegionEdit.Headers`) and Go sets the area ID and the 0x2 flag
   (`adt/header.go`); a map saved before version 5 (`MapDocument.chunkDataKnown` false, kept across
-  later saves by the header's `chunkDataUnknown`) sends none, so a region keeps the client's.
+  later saves by the header's `chunkDataUnknown`) sends no area ID (0), impassable flag (`nil`) or
+  no-tuft rows, so a region keeps the client's, but its headers still carry the holes and the baked
+  shadows (#644). A map saved before version 3 (`MapDocument.holesKnown` false, kept by
+  `holesUnknown`) sends holes only for the chunks that have one, with `holesAdd`, which Go ORs into
+  the chunk's own bitmap (`adt.ChunkHeader.HolesAdd`), so the client's holes are never filled (#663).
 
 - **Walkable ground** (#175): Terrain › Climb (`prefs.climbView`, Shift+F2) tints each triangle
   steeper than `prefs.climbAngle` in the terrain shader (`climbCos`). View › Walkable ground
@@ -143,6 +160,30 @@ The ground, its paint and chunk data, the map file and the dialogs that make or 
     (`innerPending`), and `TileGatherer.addGround` and `adtHeightSpan` add each cell's `cellLift` (0
     where a corner is off `innerBase`, as the export decides). They are not saved: a map of its own
     has none (its export writes the mean), and a region's come from the client each session.
+  - **Normals** (MCNR, #492, #668): `adt.WriteHeights` works out the normals of the chunks whose
+    heights changed, and of those around them, as the game's own tiles were made (`normalAt`): the
+    mean of the unit normals of the triangles a sample is a corner of in the ground's mesh (eight for
+    an outer sample, four for an inner one, a cell being four triangles around its inner sample),
+    each part truncated toward zero (`int8(v*127)`, not rounded). That matches the client's normals
+    to the byte inside a tile, steep ground included; the old central differences were up to 30
+    off. `normalGrid` lays the heights out on a half-step grid padded by `adt.Ring`: the row or
+    column just across each border from the neighbouring tile, and the inner samples of the cells
+    along it (`NorthIn` and so on; nil means their corners' mean, as a tile Meld builds has them), so
+    a border sample takes the same triangles in both tiles and the client shows no crease along the
+    border. A tile's corner, which lacks the diagonal tile's cell, takes the four triangles between
+    its outer neighbours instead, which all four tiles there have. `BuildRegion` gets the rings from
+    `blockEdges`: the block's own heights between its tiles (a neighbour's inner samples put through
+    `patchHeights`, as `PatchTileHeights` will write them), the client's tiles beyond its edge. `adt.Edges.Was` is the ring the tile's normals were made against (the tiles the
+    save starts from, the client's beyond without Meld's patch); a border chunk whose ring moved has
+    its normals redone though its own heights didn't change, and an unedited block stays
+    byte-identical. A new map's tiles (`ExportMap`) take the ring from the map's other tiles
+    (`tileRing`). A side without a tile stays one-sided. A client tile sharing a side with the block
+    whose normals along it the block's line one in from its edge (or the inner samples of its cells
+    there) moves gets its border chunks' normals redone too, its heights and the rest of its bytes
+    kept (`blockEdges`' `beside`, #666): `Was` there is the block tile as the client reads it now when
+    Meld's patch holds the outside tile, without the patch when it is still the client's own, so an
+    unedited save, or the same edit again, writes no tile outside. One the save writes for its models
+    too (#647) is written once, `adt.Rewrite` over the new normals.
   - `NavPreview.ts` keeps the tiles within `RANGE` (160 yd), builds the nearest first within 6 ms a
     frame, and builds them again 400 ms after the terrain's height or holes, the objects, the
     loaded collision, the liquids (`LiquidMap.version`) or the sea stop changing. A change to the
@@ -236,8 +277,93 @@ The ground, its paint and chunk data, the map file and the dialogs that make or 
   cleared comes off); an older one only as `PaintSpec.NoEffect`, which Go ORs into the chunk's own. View › Sparse/Normal/Full tufts (`prefs.groundEffectDensity`) is
   the client's Ground Clutter stop (`frillDensity` 16, 32, 48 cells a chunk). A GroundEffectTexture
   slot names a GroundEffectDoodad by its internal ID (field 1), not its row ID.
+- **The world view** (#15, the owner's decision of 2026-10-15: streaming is a second kind of
+  document beside the block editor): File › World View (from a region tab, the camera kept) or the
+  Start dialog's World View button (at the picked block's middle) open `Engine.openWorld`, a
+  `MapDocument` whose `world` is a `world/WorldStream.ts`. It draws the client's tiles of the whole
+  map in the map's editor coordinates (tile (x, y) at x·TILE_YARDS, y·TILE_YARDS, as `editorPoint`
+  has them), read one at a time from `/wow/ground` (`wow.Client.Ground`: the 129x129 outer heights,
+  a hole byte a cell, each chunk's area ID and impassable flag and a no-tufts byte a cell, read
+  through Meld's patch) with the tile's minimap image as its colour, lit
+  Lambert, within `streamReach` of the eye (3 tiles at the default view distance, 1 to 6), nearest
+  first, three reads at a time, and dropped a tile past that (`keepReach`). A tile is drawn at a
+  stride for its distance (`groundStride`: every sample within half a tile, every second within a
+  tile and a half, every fourth beyond; a coarse cell is a hole only when all its cells are), and
+  redrawn when that changes. Each edge hangs a skirt down past how far its ground strays between the
+  strides and the WDL's every eighth sample (`groundMesh`, `SKIRT_MARGIN`), so a neighbour at another
+  stride, or the horizon, leaves no slit. Past the ground (and on a tile still being read) the map's
+  WDL horizon stands in, as a region's far horizon does (View › Far Horizon): the `WorldHorizon`
+  binding (`vmangos.ReadWorldHorizon`) sends every WDL tile once, meshed whole by `horizonMesh`, and
+  `packHorizon` keeps in its index the tiles within the reach and 5 tiles more that have no ground
+  drawn, at most every 250 ms as tiles land. The frame sets its colour and shows it
+  (`WorldStream.showHorizon`), so a probe hides it through its material. The plan is worked out again
+  only when the eye crosses a quarter tile. The fog closes at the reach (`applyViewDistance`).
+  Within `PAINT_REACH` (a tile and a half, the tiles at stride 1 and 2) a tile is drawn in its own
+  texture layers instead of the minimap image: `/wow/groundpaint` (`wow.Client.GroundPaint`,
+  `TilePaint`) sends the textures it names, each chunk's four slots and every texel's weights as
+  `adt.ClientWeights` gives them (so the same as a region's `tilePaint`), read two at a time nearest
+  first. `world/WorldPainter.ts` draws each through the terrain shader with its own slot and weight
+  textures and `paintOrigin` (the tile's corner; 0 for a region), over one texture palette all the
+  painted tiles share (`PaletteSlots` in `world/worldPaint.ts`: an entry a texture, counted per tile;
+  a full array reuses an unused entry before it grows; `PaletteArray.setEntry` writes one layer), and
+  takes the light, the texture looks' clock and the view overlays from the stand-in terrain's
+  material (its `SHARED` uniforms, which the frame keeps up to date). The material is swapped in only
+  once its textures have loaded (`waiting`), so no grey shows, and the painted ground takes the
+  models' shadows (`receiveShadow`). Past `PAINT_DROP`, half a tile further, a tile goes back to its
+  minimap image and lets go of its paint. No rock on slopes (`cliffAuto` 0), no texture looks yet.
+  Each tile's liquids come beside its ground from `/wow/groundliquids` (`wow.Client.GroundLiquids`,
+  `EncodeLiquids`: its MCLQ layers as `adt.ParseLiquids` reads them for a region) and are drawn in
+  `WorldStream.water` (beside `group`, so View › Water shows them, through `applyLayerVisibility`) with a region's liquid material (`liquidLayerMaterial`), a mesh a tile
+  (`liquidMesh` in `world/worldLiquid.ts`), at the ground's stride: at 2 or 4, a block of cells the
+  layer covers whole is one quad from its corners, so open sea far off costs a sixteenth, and a
+  block with a dry cell keeps its cells (a sloping river can show a hairline at such a seam, far off
+  in the fog).
+  Each tile's models come beside its ground from `/wow/groundmodels` (`wow.Client.GroundModels`,
+  `TileModel`: the placements in the map's editor coordinates, named by `adt.ModelType` and turned by
+  `adt.Placement.EditorTurn`, which the region reader uses too) and go into the document's own
+  `objects`, so they are drawn, culled, lit and animated as a region's are; the stand-in's flat ground
+  makes `yOff` their absolute height. A model listed by several tiles under one ID is placed once
+  and taken away with the last loaded tile listing it (`TileModelShare` in `worldGround.ts`).
+  The doodads (the `m2:` batches) are drawn only as far as the client draws them: the cull's
+  `doodadReach` (`world/instanceCull.ts`, set by `Engine.cullInstances` in a world view only) leaves
+  out one further across the ground than 50, 125 or 200 yards past its radius for a radius up to 0.5,
+  2.5 or 7 yards (the ends of the 1.12 client's doodad fade bands, as Benilla reads them in
+  `model_fade.rs`); a bigger one, a tree, always shows. It cuts where the client fades.
+  When a dropped tile took models away (`WorldStream.takeDropped`), `Engine.updateWorld` takes away
+  the layer's batches no object uses any more (`ObjectLayer.dropEmptyBatches`; a region keeps its
+  empty ones) and lets go of their models through `releaseModels` (#505's path: kept while another
+  tab, a preview, the clipboard or a particle uses them), so a long flight keeps only what is near.
+  The camera's ground is the stream's (`heightAt`), keeping its height where nothing is loaded. The
+  document's terrain is an 8-cell hidden stand-in: the tools' clicks and keys are off in it
+  (pointerdown, `handleToolKey`), the commands on the map's own ground and models refuse
+  (`Engine.refuseInWorld`, called first by Select All, paste, the Terrain menu's actions, Remove
+  Duplicate Models and the baked shadows) and the menus grey them out with the map's dialogs, imports
+  and exports and Compile (`editing` in `MenuBar.svelte`), its `objects` are `lookOnly` (so
+  `selectObjects` selects none of the streamed models, and nothing that acts on a selection, delete,
+  cut, a move or the Inspector, reaches one), Save refuses, it is never `pristine` (so opening a map doesn't
+  replace it), and its tab shows no size. File › Edit Here (`editWorldHere`) opens the block of up to 3
+  tiles a side around the camera's target (`blockAround`) in a region tab, or switches to an open one
+  holding it, the camera moved by the block's corner; the world tab stays. Scenes (`map.world`) and
+  the session keep a world tab. Far buildings draw their LOD in a few calls (#691), and the scene
+  pass leaves out the models that only the far shadow cascade's box (up to 5,000 yd across) holds,
+  which the shadows still draw (objects.md, the instance batch). The models and textures landing
+  redraw the far shadow map at most once every 30 frames (lighting.md). The minimap of a world tab is
+  the map's client overview cut to the square of its tiles (`worldExtent` in `world/worldMinimap.ts`),
+  the stand-in's heights hidden, with Edit Here's block outlined; a click flies the camera there
+  (`Engine.lookAtGround`, which looks again once the tile there has loaded). Save Minimap Image
+  refuses. View › Detail info and the status bar's cursor read the streamed ground under the cursor
+  (`Engine.worldCursor`, a march of the ray at the 2 Hz stats only, since the frame's pick aims at the
+  stand-in and setting `hit` would draw the brush on the painted tiles' shared uniforms), through
+  `WorldStream.tileAt` and `worldCellDetail` (`world/worldDetail.ts`): tile, chunk, the cell on the
+  whole map, height, slope, hole, no tufts, the zone and the impassable flag (#755), the texture layers
+  once the tile's paint is read (`paintIn`) and the liquids. `Viewport.svelte` reads the area table
+  (`loadAreas`) while Detail info is on, so the zone has its name without the Map data tool. Copy
+  Teleport (`teleportAtCursor`) takes that streamed cursor too, and Launch and Play Here (`playerSpot`)
+  stand on the streamed ground (`WorldStream.heightAt`; the streamed models are look-only, so no floor),
+  on the map's own ID (`openMapId`, #754) in the whole map's frame (#756). Not yet: editing
+  in the world view itself.
 - **Growing a region**: the File menu's extend entries (`MenuBar.svelte`, shown for a region) call
-  `extendRegion` in `mapio.ts`, which opens the block one tile bigger that way
+  `extendRegion` in `io/region.ts`, which opens the block one tile bigger that way
   (`io/regionGrow.ts`, `grownBlock`: square, so one more row or column comes along, east or south
   unless the map ends there), closes the old tab and keeps the camera's view. Since the bigger block
   is read from the client and its spawns from the world database, it refuses while the region has
@@ -245,16 +371,37 @@ The ground, its paint and chunk data, the map file and the dialogs that make or 
   saved (`ui.spawnChanges`), and names Compile to Client or Save Spawns to Database (#318). A map
   that is only dirty otherwise grows: what Compile writes is in the client.
 - **Compiling a region** (#214): File › Compile to Client, Compile to Server and Compile All call
-  `compileRegion` in `mapio.ts` with `'client'`, `'server'` or `'all'`. Client builds the active tab's
+  `compileRegion` in `io/compile.ts` with `'client'`, `'server'` or `'all'`. Client builds the active tab's
   `RegionEdit` (`regionEdit`: heights, models, paint and chunk headers, liquids) and `SaveRegion`
   writes the tiles that differ from the patch's copies; Server rebuilds the server's map data of the
-  region's tiles from the patch (`UpdateRegionServer`), and refuses while the region has edits the
+  region's tiles from the patch (`UpdateRegionServer`), then their movement maps (mmaps, #173,
+  `buildMoveMaps`, unless Preferences › Build movement maps on compile is off), and refuses while the region has edits the
   patch lacks; All does both, the server only for the tiles the client compile wrote. Server and All
   also write the region's spawn edits into the world database (#342, `compileSpawns`, the same
-  `writeSpawns` as Save Spawns, which stays for spawn-only changes) before the rebuild, whose restart of
-  the world server reads them; a failed spawn write is reported and leaves the server alone, while
-  All's client tiles are still written. Compile to Client never touches the database. Compile works on the active tab only; with
-  nothing changed it names the other region tabs edited since their last compile.
+  `writeSpawns` as Save Spawns, which stays for spawn-only changes) before the rebuild; the world
+  server reads them when the author starts it again. A failed spawn write is reported and leaves the
+  server's map data alone, while All's client tiles are still written. Compile to Client never
+  touches the database. Compile works on the active tab only; with nothing changed it names the
+  other region tabs edited since their last compile.
+- **The patch's previous copy** (#475): `vmangos.InstallPatch` rebuilds Meld's patch from the one on
+  disk and renames it over, so a bug in `carryOver`/`dropUnusedMinimaps` would drop entries silently,
+  and the client-table rows (Spell.dbc, icons, lights, areas, taxis, world maps) exist nowhere else.
+  Each write therefore first renames the patch it replaces to `patch-3.MPQ.prev`, overwriting the
+  last one (`replaceKeepingPrev`, which puts it back if the new patch's rename fails). The client,
+  Meld's reader and the probes' sandbox load only `*.MPQ`, so none of them reads it. An Ironforge
+  patch is still also kept once as `.before-meld`.
+- **Compiling never closes or starts anything** (#661, the owner's choice A/A): not the game, not
+  mangosd, not realmd. A patch write (`installClient` in `app_pending.go`, used by `SaveRegion` and
+  every other client write) goes in at once when the game isn't running; while it runs (Windows
+  only: it holds the patch open) the files wait in the pending list (#365) for the watcher, the
+  result says `waiting`, and the status bar counts them ("Close the game to apply…",
+  `client:pending`, `ClientFilesWaiting`). The server map rebuild (`UpdateRegionServer`, and
+  Publish) first waits for the game to close and the waiting files to reach the patch
+  (`waitForGameClosed`), since the server is built from the patch, then `vmangos.UpdateServerMaps`
+  waits for the author to stop mangosd (which holds its map files) before extracting; each wait
+  gives up after 15 min with a message. Saves the world server reads only at its start (Zones,
+  Portals, Flight Paths) set `restart` when it runs, and `lib/io/applyNote.ts` words both notes.
+  Launch writes any waiting files before it starts the game (`flushPending`).
   `regionPaint` sends every chunk's paint, at the editor's 32x32 texels a chunk, half the client's
   64x64 alpha (`tilePaint` box-averages each 2x2 block). So `BuildRegion` compares each chunk with the
   client's tile without Meld's patch (`ownTextures`) through `ChunkPaint.KeepClientAlpha`
@@ -264,7 +411,13 @@ The ground, its paint and chunk data, the map file and the dialogs that make or 
   and only painted texels are written from the weights, repeated over their block. A chunk with no
   painted texel and the client's textures sets `ClientAlpha`, so `rebuildChunk` keeps its MCLY records
   (bar a sent effect or look flags), MCAL bytes and predominant map as they are (#526). A chunk a
-  compile before #526 already wrote at half resolution reads back that way, so it stays so.
+  compile before #526 already wrote at half resolution reads back that way, so it stays so until the
+  user runs Terrain › Restore the Client's Paint (#645, `restoreClientPaint` in `io/region.ts`): the
+  `LoadBaseRegionPaint` binding (`vmangos.ReadBaseRegionPaint`) reads the block's layers and alpha
+  without Meld's patch, `tilePaint` turns them into weights, and `Engine.restoreClientPaint`
+  (`terrain/restorePaint.ts`) writes the selected area's chunks, or all of them, back with the
+  textures remapped into the palette (any it lacked added), as one undo step. Those chunks then match
+  in the next compile and keep the client's own bytes; the paint edits there are lost.
   Models keep their unique IDs (a moved one is removed and re-added under its own). The client's tiles
   list a model whose bounds cross a tile border in each tile it overlaps, under one ID (910 M2s and 25
   WMOs on Azeroth 28-35 x 44-51), so `ReadRegion` hands the editor one object an ID, and `BuildRegion`
@@ -316,15 +469,99 @@ The ground, its paint and chunk data, the map file and the dialogs that make or 
   base64 strings they were 33 of a 3x3 block's 36.5 MB, and the call took 375-465 ms against 220-300 (#636). Launch (`launchGame`) opens the Compile and Launch
   dialog (`ui.dialog = 'compileBeforeLaunch'`) when it is true; Play Here says so in its status line.
   `regionKey` hashes the document's own arrays and settings, not `exportInput`, whose building
-  footprints in `noEffect` change as models load: a new compile input must be added to it, or Launch
-  misses its edits.
+  footprints in `noEffect` change as models load: a new compile input must be added to its
+  `RegionKeyInput` (`io/regionKey.ts`, which `Engine.regionKey` fills), or Launch misses its edits.
+  `tests/regionKey.test.ts` maps every `ExportInput` key to the inputs it is built from (a new key
+  fails `make check` until mapped) and edits every leaf of the input to see the key change (#433).
 
 - **Start dialog** (`components/NewMapDialog.svelte`, `ui.showNewDialog` + `ui.newMapMode`): every
-  map is for the 1.12 client (folder + map ID). "New world" picks a size in tiles and a preset from
-  `terrain/presets.ts` (`PRESETS`, `presetHeight`; all but Flat land are islands, so a world is
-  bounded by sea); the cards are drawn by `drawPresetPreview`. "Part of Azeroth" picks a square of
+  map is for the 1.12 client (folder + map ID). "New world" picks its tiles on the client's 64×64
+  grid (`TileGrid.svelte`, as Noggit Red's map creation wizard: a click adds a tile, Ctrl+click takes
+  one away, Shift+click adds the 3×3 round it, a drag goes on; the Size buttons pick a whole square)
+  and a preset from `terrain/presets.ts` (`PRESETS`, `presetHeight`; all but Flat land are islands,
+  so a world is bounded by sea); the cards are drawn by `drawPresetPreview`, over the picked shape.
+  **The ground** (#744): `presetHeight` gives heights in yards, laid out in tiles rather than the
+  map's 0..1 (so a big map has more hills, not the same few stretched), through domain-warped noise,
+  with the coast still laid out over the map. Off the coast the ground goes down to `seabed` (about
+  60 yd at Sea depth 1, with trenches, ridges and shoals, never above 4 yd under the water). Canyon has
+  no sea: plains inside a wall (`canyonWall`) over 300 yd high whose middle is everywhere steeper than
+  the 50 degrees the server's paths climb, which Height doesn't scale. The page's Height, Roughness,
+  Erosion, Land and Sea depth (`ShapeOptions`, `DEFAULT_SHAPE`) go to `Engine.newVmangosDocument` and
+  `Terrain.generate`, which calls `terrain/generate.ts` `generateHeights`: the preset, then droplet and
+  thermal erosion (terrain/erosion.ts) from land only, then a half 3x3 blur against the spikes drops
+  leave at cliff feet; a Canyon's walls go on after the erosion, whose gullies would cut ramps through
+  them. Land (0 to 1, 0.5 the old coast) moves where `coast` starts to fall off (and, for Archipelago, the threshold of its `where` mask): a small island at 0, land up to the edges at 1; Canyon, Open sea and Flat ignore it. Other callers of `newDocument` (the benchmark maps, probes) get no erosion. `snowLine` keeps
+  snow to ground over 110 yd above the water, so hilltops stay green.
+  **From a heightmap** (#745): the card after the presets asks for a PNG (`OpenHeightmapDialog`,
+  `ReadHeightmap`, as Terrain > Import Heightmap, #44) and swaps the sliders for Black at and White at
+  (yards), Sea and its own Erosion, none to start (Gaea and World Machine erode already; the
+  loop's choice, see the issue). `Engine.newVmangosDocument`'s `image` (`ImageGround`) goes to
+  `Terrain.generateFromImage`, `generate.ts` `imageGroundHeights`: `imageRatios` stretches the image
+  over the whole square (tiles left out are masked as for a preset, not avoided), then the same erosion,
+  from ground above the sea (everywhere without one). The sea is the water level 0, or none (Flat
+  land's -2); the card's picture is `drawHeights`, the presets' painter.
+  **Water** (#759, the owner's choice in #733): the page's last look row has Sea level (-30 to 60 yd,
+  for a preset with a sea or an image with Sea ticked; it moves the sea plane, not the ground, and
+  `autoPaint`'s sand and `snowLine` follow it), Lakes and Lakes of (water, slime or magma; the sea
+  stays the ocean). They go to `newVmangosDocument` as `WorldWater`. Lakes are `water/lakes.ts`:
+  `findLakes` priority-floods the heights from the map's edge (Barnes et al. 2014) so every basin
+  takes its spill height, and keeps a basin as a lake when its level is above the sea, it is at least
+  `LAKE_RULES.minDepth` deep and `minArea` big, and it covers at most `maxShare` of the map (a
+  Canyon's whole floor is one basin, so a Canyon gets no lake but its small hollows). `fillLakes`
+  writes them as the water brush's layers (every cell with a wet corner, the corners at the level,
+  depth by the brush's rule), and `shoreLevels` feeds `autoPaint`'s `shores`, the sand round them.
+  The pictures draw the sea at its level and the lakes in their liquid's colour (`drawHeights`'
+  `lakes`). Rivers are left for later.
+  **Ground textures** (#733, the owner's answers: a zone's own textures, not a tileset folder's):
+  the page's select lists `MapZones` by map; a pick calls `ZoneTextures` (`internal/vmangos`
+  `ReadZoneTextures`), which reads every tile of the zone's WorldMapArea rectangle and adds up, for
+  the chunks whose area is the zone or a subzone of it, each texture's visible share (a layer's alpha
+  of what the layers above leave, every second texel each way), leaving out cells under a liquid
+  (Tanaris's seabed is a third Wetlands dirt). `wow/texturePack.ts` `packPalette` sorts those into the
+  eight roles by file name (`kindOf`; textures under 1% are details and never a role): the main
+  ground is the most used that isn't rock, snow or road, lush is the next grass or, in a zone without
+  (a desert), more of the main ground's kind, and a role with none falls back to a near one (snow to
+  rock, sand to dirt). The palette is in role order, so `autoPaint`'s default `roleTex` and Map
+  Properties' regenerate paint with the pack too; nothing new is saved in the map. Reading a large
+  zone takes about 3 s, the Create button waiting.
+  **Trees and rocks** (#758, the owner's answer on #733: the pack's zone by default, a model set
+  instead): `ZoneDoodads` (`internal/vmangos/zonedoodads.go` `ReadZoneDoodads`) counts the M2
+  placements of the zone's tiles by path, kept to those on a chunk of the zone (`placementCell`: the
+  chunk under the MDDF position, checked by its corner since a tile also lists its neighbours'
+  models) on a cell no liquid covers, once each by unique ID, with the zone's dry area in square yards.
+  `wow/zoneTrees.ts` sorts them by path (`doodadKind`: tree, bush, rock; fences, tombs, camp props and
+  critters left out) into two doodad brushes, plants and rocks, the eight most placed of each weighted
+  by count with the zone's scale range (kept to 0.4 to 2.5), and a density per 10,000 square yards; a
+  model set (`setScatter`) gives its doodads even weights and a light wood's density. Create world
+  reads it (about half a second; Default uses Elwynn Forest's), loads the models (the spacing reads
+  their size), makes the world and calls `Engine.scatterWorld`, which runs `DoodadBrushTool.fill` over
+  the whole map with `FillOptions` (the attempts from the density and the page's Density, a keep
+  chance from fbm for the plants' clumps, `own` so the options bar's Max slope, Avoid water, Random
+  rotation and Follow ground don't apply) and the brushes' rules: dry ground 2 yd above the sea, at
+  most 30° for plants and 45° for rocks, 10 yd under the snow line. Each brush is one undo step
+  (Scatter trees, Scatter rocks). A Small Island of Duskwood gets about 300 models.
+  **The tiles on the grid** (#46, the owner's answers 1A to 5A): the terrain stays one square, the
+  smallest that holds the tiles (`terrain/tileMask.ts`, `boundingSquare`, at most `MAX_WORLD_TILES`
+  = 8 a side), at the grid tile `VmangosRef.tileX`, `tileY`, and `VmangosRef.tiles` masks it (a '1'
+  or '0' a tile row by row, absent for every tile). The tiles sit where they were picked, so their
+  numbers and the server's coordinates are the grid's: `Engine.serverTiles`/`tileOrigin` give the
+  map's corner to Launch, Play Here, F9, the port commands, the nav source, the lights, the tufts'
+  seeds and the windows that place server points (`serverOrigin`); publish numbers the tiles from it
+  and writes only the present ones (`mapToTiles`' `TileLayout`; a model on a tile left out counts as
+  outside), and so does Write Minimap Tiles. A tile left out (`Terrain.tileMask`, `setTileMask`)
+  draws none of its render chunks (each lies in one tile) and `Terrain.isHole` is true on it, so it
+  is never picked (`isOff` keeps the Hole mode's solid ray off it too), grows no tufts and takes no
+  model; its ground stays in the file. `TerrainStroke.finish` puts back what a stroke wrote there (heights of vertices touching no present tile, paint, mask, holes, chunk slots) before it diffs, so a brush or whole-map pass near its edge leaves it as it was and undo keeps to the stroke (#737). The
+  presets' coast follows the shape (`CoastShape`: a distance field to the tiles left out, so the sea
+  fills their edges); a whole square keeps the old round coast. Map Properties shows the same grid:
+  a tile of the square added or taken away is one undo step (`Engine.setWorldTiles`); a tile past
+  the square grows it (`Engine.growWorld`, asked first): the map is made again in its tab from its
+  snapshot moved into the bigger square (`io/worldGrow.ts`, `growSnapshot`: heights, paint, holes,
+  zones, shadows, liquids, root models, paths, the reference image, the tiles' tuft choices; the
+  camera and bookmarks move too), the new tiles flat 6 yd under the sea, and the tab's undo history
+  starts again. `growWorld` keeps the same `VmangosRef` object, so a dialog holding it stays right. "Part of Azeroth" picks a square of
   tiles on `MapPicker.svelte` (only with a project open, #48: it asks for one first), a continent overview stitched by the Go side from the client's
-  minimap (`/wow/overview?map=`, `internal/wow/minimap.go`, cached in the user's cache dir), with
+  minimap (`/wow/overview?map=`, `internal/wow/minimap.go`, cached in the user's cache dir, keyed by the archives' sizes and times so a patch write builds a new one, #493), with
   the zones of `WorldMapArea.dbc` (`MapZones` binding, `internal/vmangos/zones.go`) as jumps. The
   tiles that exist come from the map's WDT, not the minimap (`MapTiles`, `WDTTiles`, `/wow/tiles`):
   a tile with no minimap image is drawn from its ADT's heights (`drawTileRelief`), and a block that
@@ -342,11 +579,17 @@ The ground, its paint and chunk data, the map file and the dialogs that make or 
   where the server's creatures stand). Saving (`BuildRegion` → `buildWMOOnly`) writes only the WDT,
   and only when the building's model or doodad set changed; moving, turning or scaling it, or any
   other model on the map, is refused, since a building off 0 would be placed differently by the
-  client and the server's vmap extractor. `WmoRooms.outside` leaves the building out of the outside
-  flood (its groups are all interior), so it draws whole from outside.
+  client and the server's vmap extractor. For the same reason a new map with Map Properties' "The map
+  is its first building" publishes its building (the first WMO) at the world's middle, 0 on X and Z
+  in the WDT, keeping its height and turn, wherever it stands in the editor (`ExportMap`'s
+  `m.Global` branch, the owner's choice on #272). The editor's frame for such a map follows the
+  building (`Engine.serverTiles`, `wmoOnlyTiles` in `io/portCoords.ts`), so Launch, Play here, Copy
+  Position as Teleport Command (F9) and the publish message's `.go` line all point at 0,0 on the
+  server. `WmoRooms.outside` leaves the building out of the outside flood (its groups are all interior), so it draws whole from outside.
 - **Zones** (`components/ZonesDialog.svelte`, World › Zones…, `ui.dialog = 'zones'`): a map's AreaTable.dbc
   rows (`vmangos/areatable.go`: `ReadAreaRows`, `NewAreaRow`, `SetAreaRows`; bindings `AreaRows`,
-  `NewAreaRow`, `SaveAreas`). Save writes AreaTable.dbc into Meld's patch (the game closed around it) and
+  `NewAreaRow`, `SaveAreas`). Save writes AreaTable.dbc into Meld's patch (waiting for a running game
+  to close, #661) and
   the rows into the world database's `area_template`, which is where VMaNGOS reads areas from (not the
   DBC). A form saved with Save, not undo steps, like creature templates. A zone's Weather (#185) is its
   `game_weather` row (`vmangos/weather.go`, `ZoneWeather` binding): the chance of rain, snow and storm
@@ -359,7 +602,7 @@ The ground, its paint and chunk data, the map file and the dialogs that make or 
   shot, not a whole frame of the view, and keeps the map's highest ground until its heights change, #554), `io/worldMap.ts` gives the rectangle (the client's WorldMapArea row, or the
   zone's chunks grown to 3:2), the parchment look and the feathered paste over a zone the client already
   maps; Go (`vmangos/worldmap.go`, `WriteWorldMap`) cuts the 1002x668 picture into twelve DXT1 tiles and
-  sets the WorldMapArea.dbc row, written into Meld's patch with the game closed. Exploration overlays
+  sets the WorldMapArea.dbc row, written into Meld's patch (or waiting for the game to close, #661). Exploration overlays
   (#219, Overlays: one per subzone): `io/worldMap.ts` `drawOverlays` draws each subzone painted in the
   drawn part (an area whose parent is the zone) into the overlay naming it, else the one whose art
   covers half of it or more (as Elwynn's Northshire piece holds Echo Ridge Mine), else a new one; its

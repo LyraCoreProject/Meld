@@ -1,4 +1,5 @@
 <script lang="ts" module>
+	import { keysOf } from '../lib/ui/commands'
 	type Use = 'heights' | 'zones' | 'textures' | 'mask'
 	/** The conversion's choices, kept for the session. */
 	const last = $state({ use: 'heights' as Use, min: 0, max: 100, heightMode: 'set' as 'set' | 'add', tolerance: 40 })
@@ -8,7 +9,7 @@
 	import type { vmangos } from '../../wailsjs/go/models'
 	import { editor, setStatus, ui } from '../lib/state/editor.svelte'
 	import { engineRef } from '../lib/state/engineRef'
-	import { hasBackend } from '../lib/io/mapio'
+	import { hasBackend } from '../lib/io/backend'
 	import { chooseReferenceFile, readReferenceFile } from '../lib/io/referenceLoad'
 	import { colourHex, copyReference, fitPlace, type ReferenceImage, type ReferenceMode } from '../lib/terrain/referenceImage'
 	import { areaName, loadAreas } from '../lib/wow/areas'
@@ -60,9 +61,7 @@
 			e.useReferenceImage(loaded)
 			const old = editor.reference
 			// Another picture keeps the old one's place and width, at its own shape.
-			const next: ReferenceImage = old
-				? { ...old, path, h: (old.w * loaded.pixels.h) / Math.max(1, loaded.pixels.w) }
-				: e.referenceFor(loaded)
+			const next: ReferenceImage = old ? { ...old, path, h: (old.w * loaded.pixels.h) / Math.max(1, loaded.pixels.w) } : e.referenceFor(loaded)
 			commit(next, old ? 'Change reference image' : 'Add reference image')
 			setStatus(`Laid ${path} over the map (${loaded.pixels.w}×${loaded.pixels.h}). The map keeps its path, not the picture.`, 6000)
 		} catch (err) {
@@ -93,7 +92,7 @@
 	function pinToGround() {
 		const p = engineRef.current?.referenceFromScreen()
 		if (!r || !p) {
-			setStatus('Turn on the top-down view (U) to lay the image where it shows.', 4000)
+			setStatus(`Turn on the top-down view${keysOf('topDown') ? ` (${keysOf('topDown')})` : ''} to lay the image where it shows.`, 4000)
 			return
 		}
 		commit({ ...r, ...p, mode: 'ground' }, 'Lay reference image on the ground')
@@ -153,17 +152,14 @@
 
 	const USES: Array<[Use, string, string]> = [
 		['heights', 'Heights', "The image's brightness becomes heights: black Min, white Max"],
-		['zones', 'Zones', "Each colour paints a zone (AreaTable) into the chunks it covers most"],
+		['zones', 'Zones', 'Each colour paints a zone (AreaTable) into the chunks it covers most'],
 		['textures', 'Textures', 'Each colour paints a texture of the palette, alone, into its texels'],
 		['mask', 'Mask', 'The ticked colours are added to the paint mask'],
 	]
 	const canApply = $derived(
 		!!img &&
 			r?.mode === 'ground' &&
-			(last.use === 'heights' ||
-				(last.use === 'zones' && choice.areas.some((a) => a > 0)) ||
-				(last.use === 'textures' && choice.layers.some((l) => l >= 0)) ||
-				(last.use === 'mask' && choice.mask.some(Boolean))),
+			(last.use === 'heights' || (last.use === 'zones' && choice.areas.some((a) => a > 0)) || (last.use === 'textures' && choice.layers.some((l) => l >= 0)) || (last.use === 'mask' && choice.mask.some(Boolean))),
 	)
 </script>
 
@@ -174,7 +170,9 @@
 	</header>
 	<div class="body">
 		{#if !r}
-			<p class="help dim">Lay your own plan of the zone (a PNG or JPEG from a paint program or a map tool) over the map to trace it, and turn its colours into heights, zones or textures. The map keeps the picture's path, never the picture.</p>
+			<p class="help dim">
+				Lay your own plan of the zone (a PNG or JPEG from a paint program or a map tool) over the map to trace it, and turn its colours into heights, zones or textures. The map keeps the picture's path, never the picture.
+			</p>
 			<button class="active" disabled={!hasBackend() || busy} onclick={() => void choose()}>Choose image…</button>
 		{:else}
 			<div class="row">
@@ -185,7 +183,18 @@
 			{#if !img}<p class="dim">Reading the picture… (if it doesn't come, the file may have moved: Change… finds it.)</p>{/if}
 			<div class="row">
 				<label class="check"><input type="checkbox" checked={r.shown} onchange={(e) => set('shown', e.currentTarget.checked, r.shown ? 'Hide reference image' : 'Show reference image')} /> Show</label>
-				<input class="grow" type="range" min="0.05" max="1" step="0.05" value={r.opacity} oninput={(e) => opacityInput(num(e, r.opacity))} onchange={opacityDone} aria-label="Opacity" title="How much of the picture covers the ground" />
+				<input
+					class="grow"
+					type="range"
+					min="0.05"
+					max="1"
+					step="0.05"
+					value={r.opacity}
+					oninput={(e) => opacityInput(num(e, r.opacity))}
+					onchange={opacityDone}
+					aria-label="Opacity"
+					title="How much of the picture covers the ground"
+				/>
 				<span class="val">{Math.round(r.opacity * 100)}%</span>
 			</div>
 			<div class="seg" role="group" aria-label="Where it shows">
@@ -208,7 +217,9 @@
 					<input id="ref-turn" type="number" step="any" value={+(r.turn * DEG).toFixed(2)} onchange={(e) => set('turn', num(e, r.turn * DEG) / DEG, 'Turn reference image')} title="Degrees, clockwise seen from above" />
 				</div>
 				<div class="row">
-					<button class:active={ui.referenceAdjust} onclick={toggleAdjust} title="In the top-down view: drag the image to move it, a corner to scale it (Shift frees its shape), Ctrl+drag to turn it; Esc ends">Place by dragging</button>
+					<button class:active={ui.referenceAdjust} onclick={toggleAdjust} title="In the top-down view: drag the image to move it, a corner to scale it (Shift frees its shape), Ctrl+drag to turn it; Esc ends"
+						>Place by dragging</button
+					>
 					<button disabled={!img} onclick={fit} title="Centred over the whole map, its longer side the map's">Fit to map</button>
 				</div>
 			{:else}

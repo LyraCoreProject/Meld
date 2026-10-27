@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"Meld/internal/testclient"
 	"Meld/internal/wow"
 )
 
@@ -129,10 +130,10 @@ func TestSpellUpdateSQL(t *testing.T) {
 // server's row (the build it uses) written as Spell.dbc fields should equal the client's, but for
 // the spells VMaNGOS corrected. It needs WOW_DIR and VMANGOS_DIR, with the world database up.
 func TestSpellColumnsMatchClient(t *testing.T) {
-	dir, server := os.Getenv("WOW_DIR"), os.Getenv("VMANGOS_DIR")
-	if dir == "" || server == "" {
-		t.Skip("WOW_DIR or VMANGOS_DIR not set")
+	if testing.Short() {
+		t.Skip("heavy client scan; run make test-full")
 	}
+	dir, server := testclient.DataDir(t), testclient.ServerDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +155,7 @@ func TestSpellColumnsMatchClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows := tsvRows(raw, len(cols)+1)
+	rows := batchRows(raw, len(cols)+1)
 	sb, err := readClientFile(dataDir, SpellPath)
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +176,7 @@ func TestSpellColumnsMatchClient(t *testing.T) {
 		both++
 		values := map[string]string{}
 		for i, c := range cols {
-			values[c.Name] = unescapeBatch(f[i+1])
+			values[c.Name] = f[i+1]
 		}
 		rec, strs, err := spellClientRow(entry, cols, values, nil, tb.fields)
 		if err != nil {
@@ -214,10 +215,7 @@ func TestSpellColumnsMatchClient(t *testing.T) {
 // damage, against the real client and world database, and reads the Spell.dbc they would write as
 // the tooltips read the client's: nothing is written. It needs WOW_DIR and VMANGOS_DIR.
 func TestPlanSpellLive(t *testing.T) {
-	dir, server := os.Getenv("WOW_DIR"), os.Getenv("VMANGOS_DIR")
-	if dir == "" || server == "" {
-		t.Skip("WOW_DIR or VMANGOS_DIR not set")
-	}
+	dir, server := testclient.DataDir(t), testclient.ServerDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -306,6 +304,9 @@ func mustClientFile(t *testing.T, dataDir, name string) []byte {
 // and reads the planned Spell.dbc row back as the tooltips do; each INSERT runs into a temporary copy
 // of spell_template, so nothing is written. It needs WOW_DIR and VMANGOS_DIR.
 func TestSpellStartersLive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("heavy client scan; run make test-full")
+	}
 	dir, server := os.Getenv("WOW_DIR"), os.Getenv("VMANGOS_DIR")
 	if dir == "" || server == "" {
 		t.Skip("WOW_DIR or VMANGOS_DIR not set")
@@ -351,5 +352,40 @@ func TestSpellStartersLive(t *testing.T) {
 		if err := runScript(db, script); err != nil {
 			t.Errorf("%s: the INSERT fails: %v\n%s", s.ID, err, made.SQL)
 		}
+	}
+}
+
+// TestSpellsWithIcon finds an icon's SpellIcon row (any case, the lowest of two) and the spells that
+// show it, one per name, for the Icons tool (#683).
+func TestSpellsWithIcon(t *testing.T) {
+	icons := map[uint32]string{
+		7:  `Interface\Icons\Spell_Fire_FlameBolt`,
+		12: `INTERFACE\ICONS\spell_fire_flamebolt`,
+		9:  `Interface\Icons\INV_Sword_01`,
+	}
+	spell := func(id, icon int, name string) []any {
+		row := make([]any, spellFName+1)
+		for i := range row {
+			row[i] = 0
+		}
+		row[0], row[spellFIcon], row[spellFName] = id, icon, name
+		return row
+	}
+	tbl := testDBC(t, spellFRank+1,
+		spell(133, 7, "Fireball"),
+		spell(143, 7, "Fireball"),
+		spell(200, 12, "Fire Bolt"),
+		spell(300, 9, "Strike"),
+		spell(400, 0, "Nothing"),
+	)
+	id, rows, count := spellsWithIcon(icons, tbl, "spell_fire_flamebolt", 8)
+	if id != 7 || count != 3 || len(rows) != 2 || tbl.u32(rows[0], 0) != 133 || tbl.u32(rows[1], 0) != 200 {
+		t.Fatalf("flamebolt: id %d, count %d, rows %v", id, count, rows)
+	}
+	if _, rows, count := spellsWithIcon(icons, tbl, "spell_fire_flamebolt", 1); count != 3 || len(rows) != 1 {
+		t.Fatalf("limit 1: count %d, rows %v", count, rows)
+	}
+	if id, rows, count := spellsWithIcon(icons, tbl, "INV_Axe_01", 8); id != 0 || rows != nil || count != 0 {
+		t.Fatalf("unused icon: id %d, count %d, rows %v", id, count, rows)
 	}
 }

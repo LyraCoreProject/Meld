@@ -13,20 +13,64 @@ Attachments, the object layer (instancing, picking, LOD, WMO culling and rooms),
 - **Objects** (`lib/world/ObjectLayer.ts`):
   - One `InstancedMesh` per model type, so draw calls scale with the number of types, not
     instances.
-  - A mesh with nothing packed (`count` 0) is hidden (`pack`, and `SpawnLayer.cull` with the spawn
-    kinds shown): three would still set up each of its groups in every pass, since `cullForShadows`
+  - The instance batch both this layer and `SpawnLayer` draw through is `world/instanceBatch.ts`
+    (#517): `InstanceBatch` holds a batch's rows (`items`, `matrices`, `spheres`; `setRow` writes one),
+    `cull` finds the rows in view (`packed`, through `cullSpheres`; `repack` forces a change after the
+    rows were rewritten), `pack` writes them to the front of a mesh with the item each instance draws
+    in its `ids` (the mesh's `userData.ids`, which `hitId` reads), and `patch` writes moved rows in
+    place (both layers: ObjectLayer's `movedIdx`, SpawnLayer's `moved` from `refresh`, #697; `repack`
+    is then only for a rebuild). `instancedMesh` makes the meshes (skinned with a skeleton, `cullForShadows`, `watchUploads`).
+    What stays in the layers is what they batch: ObjectLayer's object tree, LOD split and WMO
+    liquid and group culling; SpawnLayer's grouping by kind and marker. A fix to culling, packing,
+    uploads or picking of instances goes there, once.
+  - A mesh with nothing packed (`count` 0) is hidden (`InstanceBatch.pack`; `SpawnLayer.cull` also
+    hides the spawn kinds not shown): three would still set up each of its groups in every pass, since `cullForShadows`
     passes every frustum but a point light's and the near cascade's (#323).
   - Our own cull packs what any frustum needs, so three culls a batch mesh only per shadow pass
     (`world/shadowReach.ts`, `cullForShadows`): a point light's cube face draws it when one of its
     packed instances meets the light's reach and the face (#133), and the sun's near cascade (registered
     each frame by `Engine.cullInstances` through `setNearCascade`) when one meets the
-    cascade's box (#325). The camera and the far cascade keep every packed batch. So `visible` on a batch mesh means "drawn now".
+    cascade's box (#325). The far cascade (registered through `setFarCascade`) keeps every packed batch. So `visible` on a batch mesh means "drawn now".
+  - The scene pass draws only the instances in the camera's frustum (#15). `cullSpheres` (with
+    `InstanceBatch.split`) packs those first and the ones only a shadow's box or a light's reach holds
+    after them, each part ascending; `splitLod` keeps that order in `near` and `far` and counts each
+    list's lead (`Batch.nearFar`). `pack` sets the mesh's `count` to the ones in view
+    (`shadowReach.setPacked`), and `cullForShadows`' `onBeforeShadow`/`onAfterShadow` swap in every
+    packed instance for a shadow pass and back. So `count`, picking and the mesh's bounding sphere
+    mean "in view"; `packedCount(mesh)` is what the shadows draw, and the readers that mean "drawn
+    anywhere" use it (`hasVisible`, which poses a model, the WMO group cull's one-instance test, a
+    spawn kind's `visible`). A scene-pass frustum (any one not registered) passes a batch only with
+    `count` above 0. A mesh that sets shadow hooks of its own must call `cullForShadows`' too
+    (`ObjectLayer.makeMesh` chains them for the WMO group cull). In the Elwynn world view this took
+    the scene pass from 1,993 calls to 1,017: the far box (up to 5,000 yd across) packed 5,989
+    instances, 979 of them in view.
   - Each loaded model gets a three-mesh-bvh bounds tree (`world/bvh.ts`), which `pick` and
-    `raycastSurface` cast through.
+    `raycastSurface` cast through. Both read a hit's object through `hitId` (`world/instanceHit.ts`)
+    and go on past a hit whose instance has no id (a mesh repacked or swapped since the last pack, #524).
+    `raycastFloor` (#660) casts the same meshes with `firstHitOnly` off, since a building's own
+    ceiling comes before its floor, and takes the nearest hit whose world normal faces up
+    (`FLOOR_MIN_UP`): ceilings and walls are passed. Only packed instances are hit, so a layer that
+    was never `update`d and `cull`ed (a unit test's) hits nothing.
   - Each loaded model may also get a meshoptimizer LOD (`models/lod.ts`): a second index over the
     same vertices, drawn by a second InstancedMesh for instances under `LOD_PX` on screen
     (`splitLod` in `instanceCull.ts`). The LOD shares the full model's bounds tree, so picking
     always hits the full model.
+  - A WMO's LOD merges its groups by class (#691, `models/farLayers.ts`), so a far building costs a
+    few draw calls instead of one a texture (Elwynn's world view: 4,070 calls to 1,990). `farPlan`
+    gives each of the model's materials a class (lit or unlit, blend, sides; a group whose texture or
+    colour moves gets -1 and keeps its own material), the worker's `farMerge` (`lod.ts`) concatenates
+    each class's LOD triangles and picks their vertices out of the model's (a vertex two groups share
+    is copied for each), and `farLod` copies those vertices into buffers of the LOD's own with a
+    `farLayer` attribute: the layer of one shared `WebGLArrayRenderTarget` (64 px a layer, mipmapped,
+    repeating, sRGB) that the group's texture is drawn into, times the tint `wowMaterial` gives its
+    material (a dim interior, a grey untextured group). `drawFarLayers` draws the layers waiting at the
+    start of each frame, 96 at most (a grey fill until the texture comes); the array doubles from 256
+    layers as they are taken, up to 2,048 or the GPU's limit, past which a LOD keeps its groups.
+    `releaseWowAsset` gives the layers back. The class materials are shared by every far WMO, patched
+    for the cascades and the room gate like a group's, and sample the array where three samples
+    `map`. The LOD mesh's materials are the model's, then the classes' (`ModelAsset.lodMaterial`), so
+    a pick through the full model's bounds tree finds the group's own material. Its shadow is drawn
+    with `farDepthMaterial`, where a cut-out's triangles (a negative layer) test the layer's alpha.
   - A WMO with liquids (MLIQ, #287) has a third InstancedMesh in its batch, `liquid`, packed with
     every instance in view (`docs/architecture/water.md`, "A WMO's liquids"); `intersect` leaves it
     out, so its lava and water are never picked.
@@ -90,7 +134,7 @@ Attachments, the object layer (instancing, picking, LOD, WMO culling and rooms),
     it against a scan.
   - A move is not a rebuild (#510): `markTree` (a touch, a re-snap) only notes the ids in their batch's
     `moved`, unless the batch is dirty anyway, and `update` recomputes those rows alone, found through
-    `index` (each id's place in `all`). `cull` then writes them in place (`patch`) into the meshes that
+    `index` (each id's place in `rows.items`). `cull` then writes them in place (`InstanceBatch.patch`) into the meshes that
     draw them, when the packing is otherwise the same, uploading only their rows (a range each, or the
     whole buffer past `RANGES_MAX` rows or while a `pack`'s whole upload is still pending, which a
     range would cut short: `wholePending`, cleared by the buffer's `onUpload`), and grows the mesh's
@@ -140,18 +184,19 @@ Attachments, the object layer (instancing, picking, LOD, WMO culling and rooms),
     The client's camera also collides with a WMO and stays off its walls. Meld's flying camera does
     so only with View › Camera Collision on (#305; off, the author flies through walls into buildings):
     each frame `CameraController.update` hands the move from the last settled eye to the new target
-    to `Engine`'s `collideWalls` hook, `WmoRooms.collide`, which runs `wmoRoom.ts` `collideSphere` in
+    to `cameraMove.ts` `moveStep` (a pure function, unit-tested in `tests/cameraMove.test.ts`, #434),
+    which calls `Engine`'s `collideWalls` hook, `WmoRooms.collide`, which runs `wmoRoom.ts` `collideSphere` in
     each nearby WMO's model space: the path is swept against the collision faces (`sweepFaces`, so a
     fast flight can't tunnel through a thin wall), stops the near plane's corner reach (0.5 yd times
-    `Engine.cornerFactor`) off a face and slides along it, then is pushed out of any face it ended
+    `cameraMove.ts` `cornerFactor`) off a face and slides along it, then is pushed out of any face it ended
     nearer to. It runs after the 3 yd floor clamp, which in a low room can put the eye in a ceiling. A
     teleport, a mode change or a tab switch (`CameraController.jump`) is not collided.
     The clamp keeps the eye 3 yd above the floor the `collisionFloor` hook gives (#310): in a WMO's
     room (`WmoRooms.current`; after a jump the probe runs for the new eye first) the highest walking
     face at or below the eye (`WmoRooms.floorAt`, `wmoRoom.ts` `walkFloorZ`, Leg A of the down-ray),
     not the terrain, which in Stormwind runs yards above and below the streets; elsewhere the higher
-    of the terrain and a WMO floor, so a roof is a floor too. The Walk camera stands on the same floor
-    (#312, `CameraController.walkFloor`), searched from `WALK_STEP` (2 yd) above the floor it stood on,
+    of the terrain and a WMO floor, so a roof is a floor too (`cameraMove.ts` `roomFloor`). The Walk camera stands on the same floor
+    (#312, `cameraMove.ts` `walkFloor`), searched from `WALK_STEP` (2 yd) above the floor it stood on,
     so stairs are climbed and a roof or bridge above is walked under; a jump into the walk searches
     from the eye. Walk always stops at the WMOs' walls (#313), whatever Camera Collision says, as the
     client's player does: its move is swept level at the eye through `collideWalls` (only x/z kept), and
@@ -196,8 +241,8 @@ Attachments, the object layer (instancing, picking, LOD, WMO culling and rooms),
   combo at +22) is read for the same loop as the bones into `Group.UV` (`UVAnim`: translation, raw
   quaternion, scaling; `Consolidate` keeps such groups apart). The frontend gives an animated group a
   material of its own with a copy of its texture (`assets.ts`, one GPU texture still) and sets the
-  copy's matrix each frame from the client's law (`world/uvAnim.ts`, `updateUVAnimations`, called from
-  `Engine.animateModels`): waterfalls and lava scroll as in the game. A batch's colour (0x54, by its
+  copy's matrix each frame from the client's law (`world/uvAnim.ts`; `updateMaterialAnimations` in
+  `models/assets.ts`, called from `Engine.animateModels`): waterfalls and lava scroll as in the game. A batch's colour (0x54, by its
   colour index) and transparency weight (0x64 through 0xA4) work the same way (B-181, `Group.Color`,
   `ColorAnim`): Go drops a batch whose alpha times weight is a constant 0 or less (the client never
   draws it), and the frontend tints the group's own material and sets its opacity, hiding it at 0
@@ -221,7 +266,8 @@ Attachments, the object layer (instancing, picking, LOD, WMO culling and rooms),
   insertion, ties to the lower index), not a sort of them all.
   - A prop's coincident light and flames merge into one light.
   - The nearest `SHADOW_LIGHTS` (3) cast cube shadows (even with the Shadows pref off) so they don't shine through walls. Their maps
-    redraw only when a light gets another source or the objects or terrain change, and culling keeps
+    redraw only when a light gets another source or the objects or terrain change, one map a frame (a new
+    light's first, ties round robin, so a drag or sculpt stroke redraws the three in turn), and culling keeps
     every model within their reach (`CullView.spheres`). The terrain shader applies them per light
     and reads the sun's shadow alone (`keyShadow`), not `getShadowMask`.
   - Lights inside a WMO's interior groups (`Effect.Interior`) get flames but no light: interiors are

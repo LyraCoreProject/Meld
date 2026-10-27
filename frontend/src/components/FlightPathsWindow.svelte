@@ -4,11 +4,16 @@
 	import { MapEntries, ReadCreature, SaveCreature, SaveTaxi, TaxiNetwork } from '../../wailsjs/go/main/App'
 	import { vmangos } from '../../wailsjs/go/models'
 	import { editor, setStatus, ui } from '../lib/state/editor.svelte'
+	import { askConfirm } from '../lib/state/confirm'
 	import { engineRef } from '../lib/state/engineRef'
-	import { hasBackend } from '../lib/io/mapio'
+	import { hasBackend } from '../lib/io/backend'
 	import { editorPoint, serverSpot } from '../lib/io/portCoords'
 	import type { TaxiHooks } from '../lib/world/TaxiLayer'
 	import { defaultRoute, flightSeconds, type Vec3 } from '../lib/world/taxiRoute'
+	import { applyNote } from '../lib/io/applyNote'
+	import Money from './Money.svelte'
+	import MoneyField from './MoneyField.svelte'
+	import RefField from './RefField.svelte'
 
 	// World › Flight Paths (#180): the open map's flight stops (TaxiNodes.dbc) and the routes between
 	// them (TaxiPath.dbc and TaxiPathNode.dbc's points), edited on the map. A window, not a dialog, so
@@ -192,8 +197,8 @@
 		const e = engineRef.current
 		if (!e) return null
 		if (atSpawn && spawn) {
-			const r = e.activeRegion()
-			const s = serverSpot(spawn, mapId ?? 0, r?.x ?? 0, r?.y ?? 0)
+			const o = e.serverOrigin()
+			const s = serverSpot(spawn, mapId ?? 0, o.x, o.y)
 			return { x: s.x, y: s.y, z: s.z }
 		}
 		const s = await e.playerSpot()
@@ -225,11 +230,11 @@
 		})
 	}
 
-	function removeStop() {
+	async function removeStop() {
 		const s = stop
 		if (!s) return
 		const own = routes.filter((r) => r.from === s.id || r.to === s.id)
-		if (own.length && !confirm(`Delete ${s.name} and its ${own.length} route${own.length === 1 ? '' : 's'}?`)) return
+		if (own.length && !(await askConfirm(`Delete ${s.name} and its ${own.length} route${own.length === 1 ? '' : 's'}?`, { title: 'Delete flight stop', ok: 'Delete' }))) return
 		for (const r of own) dropRoute(r.id)
 		stops = stops.filter((x) => x.id !== s.id)
 		dirtyStops = dirtyStops.filter((x) => x !== s.id)
@@ -310,8 +315,8 @@
 	function lookAt(p: Vec3) {
 		const e = engineRef.current
 		if (!e) return
-		const r = e.activeRegion()
-		const at = editorPoint(p, r?.x ?? 0, r?.y ?? 0)
+		const o = e.serverOrigin()
+		const at = editorPoint(p, o.x, o.y)
 		e.controller.focus(at.x, at.z, 40)
 	}
 
@@ -362,7 +367,10 @@
 			removedStops = []
 			removedRoutes = []
 			const where = [res.patch ? 'the client' : '', res.server ? "the server's data" : ''].filter(Boolean).join(' and ')
-			setStatus(`Saved ${n} flight path change${n === 1 ? '' : 's'} to ${where || 'nowhere new (nothing differed)'}.${res.server ? '' : ' Set the VMaNGOS server folder: without the server, nobody can fly them.'}`, 10000)
+			setStatus(
+				`Saved ${n} flight path change${n === 1 ? '' : 's'} to ${where || 'nowhere new (nothing differed)'}.${res.server ? '' : ' Set the VMaNGOS server folder: without the server, nobody can fly them.'}${applyNote(res)}`,
+				10000,
+			)
 		} catch (err) {
 			error = String(err)
 		} finally {
@@ -371,8 +379,8 @@
 		}
 	}
 
-	function close() {
-		if (changes && !confirm('Close without saving the flight path changes?')) return
+	async function close() {
+		if (changes && !(await askConfirm('Close without saving the flight path changes?', { title: 'Unsaved changes', ok: 'Close without saving' }))) return
 		ui.flightPaths = false
 	}
 
@@ -384,11 +392,12 @@
 		e.stopPropagation()
 	}
 
+	/** A mount creature typed or picked: an entry the taxi table holds (16 bits). */
+	const mountEntry = (v: string) => Math.min(65535, Math.max(0, Math.round(Number(v) || 0)))
 	const num = (e: Event) => {
 		const v = Number((e.target as HTMLInputElement).value)
 		return Number.isFinite(v) ? v : 0
 	}
-	const money = (c: number) => [c >= 10000 ? `${Math.floor(c / 10000)}g` : '', c >= 100 ? `${Math.floor(c / 100) % 100}s` : '', `${c % 100}c`].filter(Boolean).join(' ')
 	const duration = (s: number) => (s >= 60 ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${Math.round(s)} s`)
 	const sides = (s: Stop) => (s.allianceMount && s.hordeMount ? 'both' : s.allianceMount ? 'Alliance' : s.hordeMount ? 'Horde' : 'nobody')
 </script>
@@ -445,8 +454,14 @@
 							{#each ALLIANCE_MOUNTS as m (m.id)}<option value={m.id}>{m.name}</option>{/each}
 							{#if stop.allianceMount && !ALLIANCE_MOUNTS.some((m) => m.id === stop.allianceMount)}<option value={stop.allianceMount}>Creature {stop.allianceMount}</option>{/if}
 						</select>
-						<input class="entry" type="number" min="0" max="65535" value={stop.allianceMount} oninput={(e) => editStop('allianceMount', Math.max(0, Math.round(num(e))))} aria-label="Alliance mount creature" title="The creature the flight is ridden on" />
 					</span>
+					<RefField
+						f={{ col: 'allianceMount', label: 'Alliance mount creature', ref: 'creature', hint: 'The creature the flight is ridden on' }}
+						value={String(stop.allianceMount)}
+						changed={false}
+						bare
+						onset={(v) => editStop('allianceMount', mountEntry(v))}
+					/>
 					<label class="k" for="fp-horde">Horde</label>
 					<span class="row">
 						<select id="fp-horde" value={stop.hordeMount} onchange={(e) => editStop('hordeMount', Number((e.target as HTMLSelectElement).value))}>
@@ -454,8 +469,14 @@
 							{#each HORDE_MOUNTS as m (m.id)}<option value={m.id}>{m.name}</option>{/each}
 							{#if stop.hordeMount && !HORDE_MOUNTS.some((m) => m.id === stop.hordeMount)}<option value={stop.hordeMount}>Creature {stop.hordeMount}</option>{/if}
 						</select>
-						<input class="entry" type="number" min="0" max="65535" value={stop.hordeMount} oninput={(e) => editStop('hordeMount', Math.max(0, Math.round(num(e))))} aria-label="Horde mount creature" title="The creature the flight is ridden on" />
 					</span>
+					<RefField
+						f={{ col: 'hordeMount', label: 'Horde mount creature', ref: 'creature', hint: 'The creature the flight is ridden on' }}
+						value={String(stop.hordeMount)}
+						changed={false}
+						bare
+						onset={(v) => editStop('hordeMount', mountEntry(v))}
+					/>
 					<span class="k">Routes</span>
 					<span class="row">
 						<select bind:value={routeTo} aria-label="To stop">
@@ -470,7 +491,7 @@
 					{#each stopRoutes as r (r.id)}
 						<li>
 							<button class:picked={pickRoute === r.id} class:dirty={dirtyRoutes.includes(r.id)} onclick={() => pickRouteFromList(r.id)}>
-								{r.from === stop.id ? `→ ${stopName(r.to)}` : `← ${stopName(r.from)}`}<span class="id">{r.id} · {money(r.cost)}</span>
+								{r.from === stop.id ? `→ ${stopName(r.to)}` : `← ${stopName(r.from)}`}<span class="id">{r.id} · <Money copper={r.cost} size={11} /></span>
 							</button>
 						</li>
 					{:else}
@@ -483,11 +504,8 @@
 				<div class="form">
 					<span class="k">Route {route.id}</span>
 					<span class="dim">{stopName(route.from)} to {stopName(route.to)}: {route.points.length} points, {duration(flightSeconds(route.points))}</span>
-					<label class="k" for="fp-cost">Price (copper)</label>
-					<span class="row">
-						<input id="fp-cost" type="number" min="0" value={route.cost} oninput={(e) => editCost(num(e))} />
-						<span class="dim">{money(route.cost)}</span>
-					</span>
+					<label class="k" for="fp-cost">Price</label>
+					<MoneyField id="fp-cost" value={route.cost} onset={editCost} />
 					<span></span>
 					<span class="row">
 						<button class:active={drawing} onclick={() => (drawing = !drawing)} title="Clicks on the map add a point after the picked one, at its height">{drawing ? 'Drawing…' : 'Draw points'}</button>
@@ -506,9 +524,7 @@
 				</div>
 			{/if}
 
-			<p class="dim help">
-				Drag a stop's marker over the ground. Pick a route, then drag its points (Shift+drag for height) or Draw points; the curve turns red where it runs under the ground. Each way is a route of its own.
-			</p>
+			<p class="dim help">Drag a stop's marker over the ground. Pick a route, then drag its points (Shift+drag for height) or Draw points; the curve turns red where it runs under the ground. Each way is a route of its own.</p>
 			<div class="row">
 				<span class="dim grow">{spawn ? `Flight master: ${spawn.name}` : 'Select a creature to make it the flight master.'}</span>
 				<button onclick={() => void makeFlightMaster()} disabled={!spawn} title="Give the creature's template the flight master flag (npc_flags 8) in the world database">Make flight master</button>
@@ -516,7 +532,7 @@
 		{/if}
 	</div>
 	<footer>
-		<span class="dim grow">Save writes the client's taxi tables (the game restarts) and the server's.</span>
+		<span class="dim grow">Save writes the client's taxi tables (the game reads them when it starts) and the server's (the world server, when it starts).</span>
 		<button class="active" onclick={() => void save()} disabled={!changes || saving}>{saving ? 'Saving…' : `Save${changes ? ` (${changes})` : ''}`}</button>
 	</footer>
 </aside>
@@ -603,9 +619,6 @@
 	.row select {
 		flex: 1;
 		min-width: 0;
-	}
-	.row input.entry {
-		flex: 0 0 64px;
 	}
 	.list {
 		list-style: none;

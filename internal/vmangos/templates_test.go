@@ -1,11 +1,13 @@
 package vmangos
 
 import (
-	"os"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"Meld/internal/testclient"
 	"Meld/internal/wow"
 )
 
@@ -148,13 +150,26 @@ func TestUnescapeBatch(t *testing.T) {
 	}
 }
 
+// batchRows unescapes every field, keeps an empty last column, skips rows of another width and
+// gives no rows for empty output.
+func TestBatchRows(t *testing.T) {
+	raw := []byte("1\t" + `Back\\slash\tTab` + "\t\r\n2\tshort\n3\tTwo\\nLines\t7\n")
+	rows := batchRows(raw, 3)
+	if len(rows) != 2 || rows[0][1] != `Back\slash`+"\tTab" || rows[0][2] != "" || rows[1][1] != "Two\nLines" || rows[1].num(2) != 7 {
+		t.Fatalf("rows %q", rows)
+	}
+	if r := rows[0]; r.num(0) != 1 || r.num(9) != 0 || r.u32(0) != 1 || r.f32(9) != 0 {
+		t.Fatalf("fields of %q", r)
+	}
+	if got := batchRows(nil, 1); len(got) != 0 {
+		t.Fatalf("empty output gave %q", got)
+	}
+}
+
 // TestCreatureRecordsLive reads a template, searches displays and lists a model's animations from
 // the server and client. It needs VMANGOS_DIR (database running) and WOW_DIR, and writes nothing.
 func TestCreatureRecordsLive(t *testing.T) {
-	dir, clientDir := os.Getenv("VMANGOS_DIR"), os.Getenv("WOW_DIR")
-	if dir == "" || clientDir == "" {
-		t.Skip("VMANGOS_DIR or WOW_DIR not set")
-	}
+	dir, clientDir := testclient.ServerDir(t), testclient.DataDir(t)
 	rec, err := ReadCreature(dir, 1642) // Northshire Guard
 	if err != nil {
 		t.Fatal(err)
@@ -218,5 +233,54 @@ func TestObjectDisplays(t *testing.T) {
 	}
 	if v := list[1]; v.ID != 31 || v.Type != 3 || v.Uses != 3 || strings.Join(v.Names, ",") != "Vein a,Vein b,Vein c" || v.Scale != 1 {
 		t.Fatalf("vein %+v", v)
+	}
+}
+
+// TestEditorSavesRefuseOutOfRangeValues covers the refusals the quest, item and spell editors'
+// probes used to press a real Save for (#419): the value is refused with the message the editor
+// shows, before any SQL exists, so nothing reaches the database.
+func TestEditorSavesRefuseOutOfRangeValues(t *testing.T) {
+	cases := []struct {
+		name  string
+		table string
+		key   string
+		cols  string
+		col   string
+		value string
+		want  string
+	}{
+		{"quest level", questTable, "patch", "QuestLevel\ttinyint(3) unsigned\tNO\t\t0\t\n", "QuestLevel", "300", "QuestLevel must be from 0 to 255, not 300"},
+		{"item level", itemTable, "patch", "required_level\ttinyint(3) unsigned\tNO\t\t0\t\n", "required_level", "300", "required_level must be from 0 to 255, not 300"},
+		{"spell cost", spellTable, "build", "manaCost\tint(10) unsigned\tNO\t\t0\t\n", "manaCost", "99999999999", "manaCost must be from 0 to 4294967295, not 99999999999"},
+	}
+	for _, c := range cases {
+		sql, err := keyedUpdateSQL(c.table, c.key, parseColumns([]byte(c.cols)), 1, 0, map[string]string{c.col: c.value})
+		if err == nil || sql != "" || err.Error() != c.want {
+			t.Errorf("%s: %q, %v, want the error %q", c.name, sql, err, c.want)
+		}
+		if r := Refused(err); r == nil || r.Column != c.col {
+			t.Errorf("%s: refused %+v, want column %s", c.name, r, c.col)
+		}
+	}
+	// Only a refused value is one: a failure that names no column stays a plain error.
+	if Refused(nil) != nil || Refused(fmt.Errorf("the world database is down")) != nil {
+		t.Error("an error that refuses no value gave a column")
+	}
+	// The first refusal's column, the whole message.
+	err := fmt.Errorf("saving: %w", errors.Join(errors.New("the server said no"), refuse("MinLevel", "MinLevel is wrong"), refuse("MaxLevel", "MaxLevel too")))
+	if r := Refused(err); r == nil || r.Column != "MinLevel" || r.Message != err.Error() {
+		t.Errorf("joined: %+v", r)
+	}
+}
+
+func TestForgetDisplays(t *testing.T) {
+	displaysMu.Lock()
+	displaysCache["k"] = []DisplayEntry{{ID: 1}}
+	displaysMu.Unlock()
+	forgetDisplays()
+	displaysMu.Lock()
+	defer displaysMu.Unlock()
+	if len(displaysCache) != 0 {
+		t.Fatalf("display cache not cleared: %d entries", len(displaysCache))
 	}
 }

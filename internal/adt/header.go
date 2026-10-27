@@ -10,14 +10,18 @@ const mcnkAreaID = 0x34
 type ChunkHeader struct {
 	// AreaID is the chunk's AreaTable.dbc ID; 0 keeps the chunk's own.
 	AreaID uint32
-	// Impassable sets the header's impassable flag (0x2); false clears it.
-	Impassable bool
+	// Impassable, when set, sets the header's impassable flag (0x2) or, false, clears it; nil keeps
+	// the chunk's own (a map without chunk data of its own, which still sends holes and shadows).
+	Impassable *bool
 	// NoEffect, one byte per cell row with a bit per cell, replaces the chunk's noEffectDoodad bits,
 	// including any a ChunkPaint added; nil keeps them.
 	NoEffect []uint8
 	// Holes, when set, replaces the chunk's holes: the 1.12 4x4 bitmap, bit row*4+col for the 2x2-cell
 	// block (col, row). See HoleBits.
 	Holes *uint16
+	// HolesAdd adds Holes to the chunk's own instead of replacing them: a map that doesn't know the
+	// client's holes (one saved before the file kept them, #663) must not fill them in.
+	HolesAdd bool
 	// Shadow, when set, replaces the chunk's baked shadow map (MCSH): ShadowBytes bytes, laid out as
 	// Chunk.Shadow. See shadowPiece.
 	Shadow []byte
@@ -70,7 +74,7 @@ func HoleBits(rows []uint8) uint16 {
 }
 
 // apply writes h into a chunk header and returns the chunk's flags with the impassable bit set
-// as h has it.
+// as h has it (kept when h leaves it nil).
 func (h ChunkHeader) apply(header []byte, flags uint32) uint32 {
 	if h.AreaID != 0 {
 		binary.LittleEndian.PutUint32(header[mcnkAreaID:], h.AreaID)
@@ -80,10 +84,17 @@ func (h ChunkHeader) apply(header []byte, flags uint32) uint32 {
 	}
 	if h.Holes != nil {
 		// 1.12 knows only the low-resolution holes; the high-resolution flag of later clients goes.
-		binary.LittleEndian.PutUint16(header[mcnkHoles:], *h.Holes)
+		bits := *h.Holes
+		if h.HolesAdd {
+			bits |= binary.LittleEndian.Uint16(header[mcnkHoles:])
+		}
+		binary.LittleEndian.PutUint16(header[mcnkHoles:], bits)
 		flags &^= mcnkFlagHighHole
 	}
-	if h.Impassable {
+	if h.Impassable == nil {
+		return flags
+	}
+	if *h.Impassable {
 		return flags | mcnkFlagImpass
 	}
 	return flags &^ mcnkFlagImpass

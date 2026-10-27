@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { Terrain } from '../terrain/Terrain'
 import type { ObjectLayer, WorldObject } from './ObjectLayer'
 import type { Command } from '../state/history'
+import { addedCommand } from './objectCommands'
 import { TerrainStroke, type Rect } from '../tools/brush'
 import { LiquidStroke } from '../water/liquidStroke'
 import { ChunkDataStroke } from '../tools/chunkDataStroke'
@@ -12,17 +13,7 @@ import { pastedHeight, type PasteHeightMode } from './pasteHeight'
 import { copyLiquidCells, pasteLiquidCells, type LiquidClip, type LiquidMap } from '../water/liquids'
 import { insideDistance } from '../terrain/areaShape'
 import { pasteLandings, type Landing } from './pasteLanding'
-import {
-	CHUNK_CELLS,
-	MAX_PALETTE,
-	NO_TEXTURE,
-	SLOTS,
-	SPLAT_PER_CELL,
-	acquireSlot,
-	chunkOf,
-	normalizeTexel,
-	paletteIndex,
-} from '../terrain/chunkPaint'
+import { CHUNK_CELLS, MAX_PALETTE, NO_TEXTURE, SLOTS, SPLAT_PER_CELL, acquireSlot, chunkOf, normalizeTexel, paletteIndex } from '../terrain/chunkPaint'
 
 /** A rectangular piece of a map, copied for pasting into any open map. */
 export interface MapClip {
@@ -180,16 +171,7 @@ export function pasteObjects(terrain: Terrain, objects: ObjectLayer, clip: Objec
 	const landings = onModels ? pasteLandings(objects, terrain, clip.objects, x, z) : undefined
 	const added = decodeObjects(terrain, objects, clip.objects, x, z, landings)
 	if (!added.length) return null
-	const saved = added.map((o) => ({ ...o }))
-	const label = saved.length === 1 ? 'Paste model' : `Paste ${saved.length} models`
-	return {
-		added,
-		cmd: {
-			label,
-			undo: () => saved.forEach((o) => objects.remove(o.id)),
-			redo: () => saved.forEach((o) => objects.add({ ...o })),
-		},
-	}
+	return { added, cmd: addedCommand(objects, added, added.length === 1 ? 'Paste model' : `Paste ${added.length} models`) }
 }
 
 /** A stand-in colour for a clip texture that isn't in the palette it came from. */
@@ -272,7 +254,6 @@ export function copyRegion(terrain: Terrain, objects: ObjectLayer, r: Rect, pale
 	if (shadows) clip.shadows = shadows
 	return clip
 }
-
 
 /** Edge fade factor for a point `d` cells from the nearest pasted edge. */
 const fade = (d: number, blend: number) => (blend <= 0 ? 1 : Math.min(1, Math.max(0, d / blend)))
@@ -488,7 +469,7 @@ export function pasteRegion(
 
 	const terrainCmd = stroke.finish()
 	if (!terrainCmd && !liquidCmd && !chunkCmd && !shadowCmd && !added.length && !paletteChanged) return null
-	const saved = added.map((o) => ({ ...o }))
+	const objectsCmd = added.length ? addedCommand(objects, added, 'Paste') : null
 	return {
 		label: 'Paste',
 		bytes: (terrainCmd?.bytes ?? 0) + (liquidCmd?.bytes ?? 0) + (chunkCmd?.bytes ?? 0) + (shadowCmd?.bytes ?? 0),
@@ -497,7 +478,7 @@ export function pasteRegion(
 			liquidCmd?.undo()
 			chunkCmd?.undo()
 			shadowCmd?.undo()
-			for (const o of saved) objects.remove(o.id)
+			objectsCmd?.undo()
 			if (paletteChanged) setPalette(paletteBefore)
 		},
 		redo: () => {
@@ -505,7 +486,7 @@ export function pasteRegion(
 			liquidCmd?.redo()
 			chunkCmd?.redo()
 			shadowCmd?.redo()
-			for (const o of saved) objects.add({ ...o })
+			objectsCmd?.redo()
 			if (paletteChanged) setPalette(palette)
 		},
 	}

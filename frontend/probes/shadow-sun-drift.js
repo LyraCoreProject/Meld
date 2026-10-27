@@ -5,6 +5,7 @@
 // the view then stays within the threshold of the shot taken just after that redraw. The pixel test is
 // weak (the lighting also turns, and a 0.1° slide is a few texels: mean 0.07 before the fix, 0.03 after),
 // so the matrix is the real check.
+// touches: frontend/src/lib/engine/shadowCascades.ts, frontend/src/lib/engine/Environment.ts
 const e = P.e
 const { prefs } = await P.state()
 e.newDocument(256, 'flat', 0, 'Probe')
@@ -25,7 +26,14 @@ try {
 	// A low afternoon sun, for long shadows that slide the most.
 	e.hour = 16
 	const focus = e.env.key.target.position
-	for (const [dx, dz] of [[-25, -25], [25, -25], [-25, 25], [25, 25], [0, 0]]) e.objects.add({ type: 'helper:cube:4', x: focus.x + dx, z: focus.z + dz, yOff: 0, rotY: 0, scale: 1 })
+	for (const [dx, dz] of [
+		[-25, -25],
+		[25, -25],
+		[-25, 25],
+		[25, 25],
+		[0, 0],
+	])
+		e.objects.add({ type: 'helper:cube:4', x: focus.x + dx, z: focus.z + dz, yOff: 0, rotY: 0, scale: 1 })
 	await P.settle()
 	await P.frames(10)
 	// Freeze everything but the hour: a shot is then only the sun's doing.

@@ -4,7 +4,8 @@ import type { Tool, ToolContext } from './Tool'
 import { editor, prefs, setStatus } from '../state/editor.svelte'
 import type { Command } from '../state/history'
 import { getAsset } from '../models/assets'
-import { hasSkeleton, modelMesh } from '../world/Animator'
+import { GhostPool } from './ghosts'
+import { grow } from './typedArray'
 import { spawnType } from '../world/spawnInfo'
 import { spawnAdd, spawnDelete, spawnsBatch } from '../world/spawnEdits'
 import { spawnKey, spawnOrientation } from '../world/SpawnLayer'
@@ -23,6 +24,8 @@ export interface SpawnBrushHooks {
 	newCreature(e: SpawnBrushEntry, x: number, y: number, z: number, orientation: number): vmangos.WorldSpawn | null
 	/** What the creature of `e` looks like, as a spawn type for its ghost; '' while it loads. */
 	ghostType(e: SpawnBrushEntry): string
+	/** The size the creature of `e` is drawn at once placed (#672): its template's scale times its display's. */
+	ghostScale(e: SpawnBrushEntry): number
 }
 
 /** Most placements tried a frame while the button is held. */
@@ -55,22 +58,19 @@ export class SpawnBrushTool implements Tool {
 	private nearCount = 0
 	private plan: Planned[] = []
 	private planKey = new InputsKey()
-	private ghosts: THREE.Mesh[] = []
-	private ghostGroup = new THREE.Group()
+	private ghosts = new GhostPool()
 	/** The model types of the ghosts shown now, which the Engine poses (#328). */
 	private ghostTypes = new Set<string>()
 	private ray = new THREE.Raycaster()
 
-	constructor(private hooks: SpawnBrushHooks) {
-		this.ghostGroup.renderOrder = 20
-	}
+	constructor(private hooks: SpawnBrushHooks) {}
 
 	activate(ctx: ToolContext) {
-		ctx.scene.add(this.ghostGroup)
+		this.ghosts.attach(ctx.scene)
 	}
 
 	deactivate(ctx: ToolContext) {
-		ctx.scene.remove(this.ghostGroup)
+		this.ghosts.detach(ctx.scene)
 		this.ghostTypes.clear()
 		this.plan = []
 		this.planKey.reset()
@@ -89,7 +89,7 @@ export class SpawnBrushTool implements Tool {
 		if (!hit) return
 		const brush = this.brush
 		if (!brush.entries.length) {
-			setStatus('The spawn brush has no creatures yet: pick some in the browser\'s Creatures tab below.', 6000)
+			setStatus("The spawn brush has no creatures yet: pick some in the browser's Creatures tab below.", 6000)
 			return
 		}
 		this.cmds = []
@@ -130,12 +130,14 @@ export class SpawnBrushTool implements Tool {
 		const label = this.erasing ? `Erase ${n} creature${n === 1 ? '' : 's'}` : `Spawn brush (${n} creature${n === 1 ? '' : 's'})`
 		ctx.history.push({
 			label,
-			undo: () => spawnsBatch(ctx.spawns, () => {
-				for (let i = cmds.length - 1; i >= 0; i--) cmds[i].undo()
-			}),
-			redo: () => spawnsBatch(ctx.spawns, () => {
-				for (const c of cmds) c.redo()
-			}),
+			undo: () =>
+				spawnsBatch(ctx.spawns, () => {
+					for (let i = cmds.length - 1; i >= 0; i--) cmds[i].undo()
+				}),
+			redo: () =>
+				spawnsBatch(ctx.spawns, () => {
+					for (const c of cmds) c.redo()
+				}),
 		})
 		setStatus(`${label}. Save them with File › Save Spawns.`, 4000)
 	}
@@ -145,19 +147,14 @@ export class SpawnBrushTool implements Tool {
 		const brush = this.brush
 		this.ghostTypes.clear()
 		if (!hit || this.cmds || !brush.entries.length) {
-			for (const g of this.ghosts) g.visible = false
+			this.ghosts.hideAll()
 			return
 		}
 		this.ensurePlan(ctx, hit)
-		while (this.ghosts.length < this.plan.length) {
-			const m = new THREE.Mesh(new THREE.BufferGeometry())
-			this.ghosts.push(m)
-			this.ghostGroup.add(m)
-		}
+		this.ghosts.grow(this.plan.length)
 		for (let i = 0; i < this.ghosts.length; i++) {
-			let g = this.ghosts[i]
+			this.ghosts.at(i).visible = false
 			const p = this.plan[i]
-			g.visible = false
 			if (!p) continue
 			const x = hit.x + p.dx
 			const z = hit.z + p.dz
@@ -165,17 +162,12 @@ export class SpawnBrushTool implements Tool {
 			const type = y === null ? '' : this.hooks.ghostType(brush.entries[p.entry])
 			const asset = type ? getAsset(type) : null
 			if (!asset?.ready || y === null) continue
-			if (g.geometry !== asset.geometry || !hasSkeleton(g, asset.skeleton)) {
-				g = modelMesh(asset.geometry, asset.material, asset.skeleton)
-				g.renderOrder = this.ghostGroup.renderOrder
-				this.ghostGroup.remove(this.ghosts[i])
-				this.ghostGroup.add(g)
-				this.ghosts[i] = g
-			}
+			const g = this.ghosts.show(i, asset)
 			g.visible = true
 			this.ghostTypes.add(type)
 			g.position.set(x, y, z)
 			g.rotation.set(0, p.turn, 0)
+			g.scale.setScalar(this.hooks.ghostScale(brush.entries[p.entry]))
 		}
 	}
 
@@ -184,7 +176,12 @@ export class SpawnBrushTool implements Tool {
 		const brush = this.brush
 		const radius = editor.brush.radius
 		const step = Math.max(1, radius * 0.25)
-		const key = this.planKey.begin().add(Math.round(hit.x / step)).add(Math.round(hit.z / step)).add(radius).add(ctx.spawns.changeStamp)
+		const key = this.planKey
+			.begin()
+			.add(Math.round(hit.x / step))
+			.add(Math.round(hit.z / step))
+			.add(radius)
+			.add(ctx.spawns.changeStamp)
 		key.add(brush.density).add(brush.spacing).add(brush.facing).add(brush.maxSlope).add(brush.avoidWater)
 		for (const e of brush.entries) key.add(e.entry).add(e.weight)
 		if (!key.changed()) return
@@ -224,6 +221,7 @@ export class SpawnBrushTool implements Tool {
 		const z = hit.z + dz
 		if (!this.groundAllows(ctx, x, z) || !spacedOut(x, z, brush.spacing, this.near, this.nearCount)) return false
 		const y = this.surfaceY(ctx, hit, x, z)
+		if (y === null) return false
 		const s = this.hooks.newCreature(e, x, y, z, spawnOrientation(turn))
 		if (!s) return false
 		const lv = brushLevels(brush, e)
@@ -239,16 +237,19 @@ export class SpawnBrushTool implements Tool {
 
 	/**
 	 * The height a creature at (x, z) stands at: the ground, or, when the brush is on a model (a mine's
-	 * floor, a bridge), the model's surface under the point near the brush's height.
+	 * floor, a bridge), the model's floor under the point near the brush's height (a ceiling passed
+	 * through, #660). Null where a brush under the ground finds no floor (past a cave's wall), since
+	 * the ground there is far overhead.
 	 */
-	private surfaceY(ctx: ToolContext, hit: THREE.Vector3, x: number, z: number): number {
+	private surfaceY(ctx: ToolContext, hit: THREE.Vector3, x: number, z: number): number | null {
 		const ground = ctx.terrain.heightAt(x, z)
 		if (Math.abs(hit.y - ground) < 0.5 && !ctx.terrain.isHole(hit.x, hit.z)) return ground
 		this.ray.ray.origin.set(x, hit.y + 4, z)
 		this.ray.ray.direction.set(0, -1, 0)
 		this.ray.far = 12
-		const s = ctx.objects.raycastSurface(this.ray)
-		return s ? s.point.y : ground
+		const s = ctx.objects.raycastFloor(this.ray)
+		if (s) return s.point.y
+		return ground > hit.y + 4 ? null : ground
 	}
 
 	/** Whether the brush's rules let a creature stand at (x, z): on the map, no hole, not too steep, and out of water if asked. */
@@ -298,11 +299,7 @@ export class SpawnBrushTool implements Tool {
 
 	private pushNear(x: number, z: number) {
 		const n = this.nearCount
-		if (n * 2 + 2 > this.near.length) {
-			const grown = new Float32Array(this.near.length * 2)
-			grown.set(this.near)
-			this.near = grown
-		}
+		this.near = grow(this.near, n * 2 + 2)
 		this.near[n * 2] = x
 		this.near[n * 2 + 1] = z
 		this.nearCount = n + 1

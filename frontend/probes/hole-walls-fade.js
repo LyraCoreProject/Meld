@@ -1,4 +1,5 @@
 // The hole walls (the Select tool's edge ribbons) fade with the camera's distance (#249): drawn near a hole, gone from across the map, and shown round the cursor at any distance.
+// touches: frontend/src/lib/tools/HoleWalls.ts, frontend/src/lib/terrain/holes.ts
 const e = P.e
 const { editor } = await P.state()
 e.newDocument(256, 'flat', 0, 'Probe')
@@ -9,7 +10,7 @@ editor.selection = null
 await P.frames(1)
 const t = e.terrain
 const cs = t.cellSize
-const walls = e.tools.select.walls
+const walls = e.ctx.holeWalls
 const cx = 124 * cs
 const cz = 124 * cs
 // A square camera of our own, so the ribbons' width (a share of the cursor's distance) is a few pixels in every view.

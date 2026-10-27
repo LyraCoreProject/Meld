@@ -2,7 +2,11 @@
 	import { startSaving } from '../lib/state/saving'
 	import { DeleteConditionText, ReadGossip, SaveConditionText, SaveGossipOptions, SaveGreeting } from '../../wailsjs/go/main/App'
 	import type { vmangos } from '../../wailsjs/go/models'
+	import MoneyField from './MoneyField.svelte'
+	import RefField from './RefField.svelte'
+	import type { CreatureField } from '../lib/world/creatureFields'
 	import { setStatus } from '../lib/state/editor.svelte'
+	import { RowList } from '../lib/ui/rowList.svelte'
 	import { ACTION_TALK, AI_EVENTS, CHAT_TYPES, GOSSIP_ACTIONS, GOSSIP_ICONS, nameOf, nextOptionId } from '../lib/wow/gossipNames'
 
 	// The creature editor's Messages tab (#145, #158): what the creature says when a player talks to
@@ -10,13 +14,18 @@
 	// lines its AI says on its own (read only). Broadcast texts are shared between creatures, so Go
 	// never edits one: a greeting or conditioned text save adds new text rows and points this
 	// creature's menu at them, an edited option text goes into the option's own row, and a shared
-	// menu is copied first.
+	// menu is copied first. An option's menu, script, map point and condition, and a text's
+	// condition, are pickers of the world database's rows (#700).
 
-	let {
-		entry,
-		onsaved,
-		dirty = $bindable(false),
-	}: { entry: number; onsaved: (menuId: number) => void; dirty?: boolean } = $props()
+	const MENU: CreatureField = { col: 'action_menu_id', label: 'Menu', ref: 'gossip', options: [[-1, 'Closes the window']], hint: 'The gossip menu it opens; −1 closes the window' }
+	const SCRIPT: CreatureField = { col: 'action_script_id', label: 'Script', ref: 'gossip script', hint: 'A gossip_scripts id run when it is picked (0 for none)' }
+	const POI: CreatureField = { col: 'action_poi_id', label: 'Map point', ref: 'map point', hint: 'A point of interest marked on the map (0 for none)' }
+	const CONDITION: CreatureField = { col: 'condition_id', label: 'Condition', ref: 'condition', hint: 'A conditions row the option needs to show (0 always)' }
+	const TEXT_CONDITION: CreatureField = { col: 'condition_entry', label: 'Condition', ref: 'condition', hint: 'The conditions row that must hold' }
+	/** A picker's text as a number (an emptied box is 0). */
+	const num = (v: string) => Number(v) || 0
+
+	let { entry, onsaved, dirty = $bindable(false) }: { entry: number; onsaved: (menuId: number) => void; dirty?: boolean } = $props()
 
 	let gossip = $state<vmangos.Gossip | null>(null)
 	let male = $state('')
@@ -100,10 +109,10 @@
 	}
 
 	/** The options being edited, and as last read (JSON), to tell an edit. */
-	let options = $state<vmangos.GossipOption[]>([])
-	let savedOptions = $state('[]')
+	const optionRows = new RowList<vmangos.GossipOption[]>({ empty: [] })
+	const options = $derived(optionRows.rows)
 	let savingOptions = $state(false)
-	const optionsDirty = $derived(JSON.stringify(options) !== savedOptions)
+	const optionsDirty = $derived(optionRows.dirty)
 	const greetingDirty = $derived(male !== savedMale || female !== savedFemale)
 
 	$effect(() => {
@@ -111,8 +120,7 @@
 	})
 
 	function readOptions(g: vmangos.Gossip) {
-		options = (g.options ?? []).map((o) => ({ ...o }))
-		savedOptions = JSON.stringify(options)
+		optionRows.set((g.options ?? []).map((o) => ({ ...o })))
 	}
 
 	function addOption() {
@@ -196,6 +204,11 @@
 		}
 	}
 
+	/** Drops every unsaved change: the greeting, the conditioned texts and the options (the editor's Discard). */
+	export function revert() {
+		void load()
+	}
+
 	async function save() {
 		saving = true
 		const end = startSaving("Saving the creature's greeting")
@@ -243,12 +256,15 @@
 			<button onclick={addCond} title="Add a text shown instead of the greeting when a condition holds">Add text</button>
 		</div>
 		<p class="dim">
-			Each replaces the greeting when its condition (a row of the conditions table) holds; of those that hold, the highest-numbered condition wins. A saved text is a new text row, so other creatures showing the old one keep it{(gossip?.shared ?? 0) > 1 ? '; this shared menu is copied for this creature first' : ''}.
+			Each replaces the greeting when its condition (a row of the conditions table) holds; of those that hold, the highest-numbered condition wins. A saved text is a new text row, so other creatures showing the old one keep it{(gossip?.shared ??
+				0) > 1
+				? '; this shared menu is copied for this creature first'
+				: ''}.
 		</p>
 		{#each conds as c, i (c)}
 			<div class="option">
 				<div class="line">
-					<label class="cond" title="The conditions row (condition_entry) that must hold">Condition <input type="number" min="1" bind:value={c.condition} /></label>
+					<div class="cond"><RefField f={TEXT_CONDITION} value={String(c.condition)} changed={c.condition !== c.savedCondition} onset={(v) => (c.condition = num(v))} /></div>
 					<span class="dim">{c.textId ? `text ${c.textId}` : 'new'}</span>
 					<span class="row-actions">
 						<button disabled={!condDirty(c) || savingCond >= 0} onclick={() => revertCond(i)}>Revert</button>
@@ -271,7 +287,10 @@
 			{#if !gossip?.menuId}
 				The lines a player can pick. Save a greeting first: that makes the creature's gossip menu.
 			{:else}
-				The lines a player can pick, in this order. Talk opens another gossip menu (−1 closes the window); the others open their window. An edited text is kept with the option, so other creatures using the same text keep theirs{(gossip.shared ?? 0) > 1 ? '; this shared menu is copied for this creature first' : ''}.
+				The lines a player can pick, in this order. Talk opens another gossip menu (−1 closes the window); the others open their window. An edited text is kept with the option, so other creatures using the same text keep theirs{(gossip.shared ??
+					0) > 1
+					? '; this shared menu is copied for this creature first'
+					: ''}.
 			{/if}
 		</p>
 		{#each options as o, i (o)}
@@ -291,14 +310,16 @@
 						<button onclick={() => options.splice(i, 1)} title="Delete the option">✕</button>
 					</span>
 				</div>
-				<div class="line small">
+				<div class="refs">
 					{#if o.action === ACTION_TALK}
-						<label title="The gossip menu it opens; −1 closes the window">Menu <input type="number" min="-1" bind:value={o.actionMenu} /></label>
+						<RefField f={MENU} value={String(o.actionMenu)} changed={false} onset={(v) => (o.actionMenu = num(v))} />
 					{/if}
-					<label title="A gossip_scripts id run when it is picked (0 for none)">Script <input type="number" min="0" bind:value={o.actionScript} /></label>
-					<label title="A point of interest marked on the map (0 for none)">Map point <input type="number" min="0" bind:value={o.actionPoi} /></label>
-					<label title="A conditions row the option needs to show (0 always)">Condition <input type="number" min="0" bind:value={o.condition} /></label>
-					<label title="Copper the player pays to pick it; the box asks first">Cost <input type="number" min="0" bind:value={o.boxMoney} /></label>
+					<RefField f={SCRIPT} value={String(o.actionScript)} changed={false} onset={(v) => (o.actionScript = num(v))} />
+					<RefField f={POI} value={String(o.actionPoi)} changed={false} onset={(v) => (o.actionPoi = num(v))} />
+					<RefField f={CONDITION} value={String(o.condition)} changed={false} onset={(v) => (o.condition = num(v))} />
+				</div>
+				<div class="line small">
+					<label class="cost" title="What the player pays to pick it; the box asks first">Cost <MoneyField value={o.boxMoney} onset={(v) => (o.boxMoney = v)} /></label>
 					<label class="box" title="A box asking the player to confirm (empty for none)">Box <input bind:value={o.boxText} placeholder="none" /></label>
 					<label class="check" title="The box asks for a typed code"><input type="checkbox" bind:checked={o.boxCoded} /> Code</label>
 				</div>
@@ -386,16 +407,19 @@
 		align-items: center;
 		gap: 4px;
 	}
-	.line.small input[type='number'] {
-		width: 64px;
+	.line .cost {
+		width: 240px;
 	}
 	.line .cond {
-		flex-direction: row;
-		align-items: center;
-		gap: 4px;
+		flex: 1;
+		min-width: 0;
+		display: grid;
+		grid-template-columns: repeat(2, 1fr);
 	}
-	.line .cond input {
-		width: 80px;
+	.refs {
+		display: grid;
+		grid-template-columns: repeat(4, 1fr);
+		gap: 4px 8px;
 	}
 	.line .row-actions {
 		margin-left: auto;

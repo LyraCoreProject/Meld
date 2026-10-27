@@ -98,6 +98,9 @@ uniform float chunksSide;
 uniform float chunkWorld;
 uniform float rockLayer;
 uniform float worldSize;
+// Where the paint's texel (0, 0) lies in the world: 0 for a region's terrain, the tile's corner for a
+// world view's painted tile (world/worldPaint.ts).
+uniform vec2 paintOrigin;
 // The texture looks (world/textureLooks.ts) per palette entry, 256 wide: r is 0 for still or the speed
 // plus one, g the scroll's direction (0 to 7), b 255 for overbright. lookTime is in seconds.
 uniform sampler2D lookTex;
@@ -144,6 +147,7 @@ uniform float bakedShadowOn;
 uniform float maskVisible;
 // The Map data overlay: 0 off, 1 zones, 2 impassable, 3 no tufts (see Terrain.setMapDataOverlay).
 uniform float mapDataMode;
+uniform vec3 mapDataZone;
 uniform sampler2D chunkDataTex;
 // A texel per cell of the map (Terrain.cellTex), two overlays in one sampler (#394): red the cells
 // that grow no tufts (Map data's mode 3), green a free-form area (selMode 3), set inside (#183).
@@ -203,7 +207,8 @@ vec4 blend(vec4 ids, vec4 w, vec2 tuv, vec2 dx, vec2 dy) {
 void main() {
   // Seen from below (the camera under the ground, or inside a hill), the ground is a dark ceiling.
   vec3 n = normalize(vNormal) * (gl_FrontFacing ? 1.0 : -1.0);
-  vec2 suv = vWorldPos.xz / worldSize;
+  vec2 pp = vWorldPos.xz - paintOrigin;
+  vec2 suv = pp / worldSize;
   // One repeat a cell, eight a chunk, as the client tiles its ground textures (Benilla's
   // TERRAIN_LAYER_TILES, terrain.rs; MIT/Apache-2.0): fixed, not a setting.
   vec2 tuv = vWorldPos.xz / cellSize;
@@ -211,7 +216,8 @@ void main() {
   // so one pair of derivatives serves them all, taken here outside any branch.
   vec3 pdx = dFdx(vWorldPos) / cellSize;
   vec3 pdy = dFdy(vWorldPos) / cellSize;
-  vec2 cell = floor(vWorldPos.xz / chunkWorld);
+  // Clamped, so the far edge (and a world tile's skirt, hung from it) reads the last chunk.
+  vec2 cell = clamp(floor(pp / chunkWorld), 0.0, chunksSide - 1.0);
   vec4 ids = floor(texture2D(slotTex, (cell + 0.5) / chunksSide) * 255.0 + 0.5);
   // Bilinear within the chunk, as the game filters its alpha maps. The four weights name this chunk's
   // own slots, so texels of a neighbouring chunk (other slots) are never mixed in: every tap is clamped
@@ -301,7 +307,11 @@ void main() {
     if (depth > 0.0) {
       lit = mix(lit, waterDeep, clamp(depth / 7.0, 0.0, 0.88));
     }
-    float foam = 1.0 - smoothstep(0.0, 0.35, abs(depth));
+    // The foam line is 0.35 yd either side of the waterline. Where a pixel spans more height than that
+    // (far off, or on a steep shore) the line is widened to the pixel and dimmed to match, so it stays
+    // a steady line instead of a thinner-than-a-pixel one that sparkles as the camera moves (#747).
+    float band = max(0.35, fwidth(depth) * 1.5);
+    float foam = (1.0 - smoothstep(0.0, band, abs(depth))) * (0.35 / band);
     // Foam is lit like everything else, so it doesn't glow at night.
     vec3 foamColor = vec3(0.85, 0.92, 0.95) * clamp(skyAmbient * 1.4 + sunColor * 0.7, 0.0, 1.0);
     lit = mix(lit, foamColor, foam * 0.35);
@@ -366,8 +376,15 @@ void main() {
     vec4 cd = texture2D(chunkDataTex, (cc + 0.5) / chunksSide);
     float stripes = step(0.5, fract((vWorldPos.x + vWorldPos.z) / (cellSize * 2.0)));
     if (mapDataMode < 1.5) {
-      // Each zone in its own colour; a chunk with none is left as it is.
-      lit = mix(lit, cd.rgb, dot(cd.rgb, vec3(1.0)) > 0.0 ? 0.4 : 0.0);
+      // Each zone in its own colour; a chunk with none is left as it is. The chunks of the zone being
+      // painted (mapDataZone) are striped and stronger, and every chunk's edge is drawn, so a stroke shows
+      // which chunks it reached.
+      float zoned = dot(cd.rgb, vec3(1.0)) > 0.0 ? 1.0 : 0.0;
+      float mine = zoned * step(dot(abs(cd.rgb - mapDataZone), vec3(1.0)), 0.01) * step(0.001, dot(mapDataZone, vec3(1.0)));
+      lit = mix(lit, cd.rgb, zoned * (0.4 + mine * (0.1 + 0.2 * stripes)));
+      vec2 ce = vWorldPos.xz / chunkWorld;
+      vec2 cg = abs(fract(ce - 0.5) - 0.5) / fwidth(ce);
+      lit = mix(lit, vec3(1.0), zoned * (1.0 - min(min(cg.x, cg.y), 1.0)) * 0.45);
     } else if (mapDataMode < 2.5) {
       lit = mix(lit, vec3(0.9, 0.1, 0.1), cd.a > 0.5 ? 0.25 + 0.25 * stripes : 0.0);
     } else if (mapDataMode < 3.5) {
@@ -452,82 +469,76 @@ void main() {
 }
 `
 
-export function createTerrainMaterial(
-  palette: THREE.Texture,
-  slots: THREE.Texture,
-  weights: THREE.Texture,
-  worldSize: number,
-  cellSize: number,
-  chunkWorld: number,
-  chunksSide: number,
-): THREE.ShaderMaterial {
-  const uniforms: Record<string, THREE.IUniform> = {
-    ...THREE.UniformsUtils.clone(THREE.UniformsLib.fog),
-    ...THREE.UniformsUtils.clone(THREE.UniformsLib.lights),
-    palette: { value: palette },
-    slotTex: { value: slots },
-    weightTex: { value: weights },
-    chunksSide: { value: chunksSide },
-    chunkWorld: { value: chunkWorld },
-    rockLayer: { value: 3 },
-    worldSize: { value: worldSize },
-    cellSize: { value: cellSize },
-    lookTex: { value: null },
-    lookTime: { value: 0 },
-    sunDir: { value: new THREE.Vector3(0.5, 0.8, 0.3).normalize() },
-    sunColor: { value: new THREE.Color(1.0, 0.95, 0.85) },
-    clientLit: { value: 0 },
-    clientAmbient: { value: new THREE.Vector3() },
-    clientDiffuse: { value: new THREE.Vector3() },
-    clientSpecular: { value: new THREE.Vector3() },
-    clientPointCount: { value: 0 },
-    clientPointPos: { value: Array.from({ length: LIGHT_POOL }, () => new THREE.Vector3()) },
-    clientPointColor: { value: Array.from({ length: LIGHT_POOL }, () => new THREE.Vector3()) },
-    skyAmbient: { value: new THREE.Color(0.45, 0.5, 0.6) },
-    groundAmbient: { value: new THREE.Color(0.25, 0.22, 0.18) },
-    cliffAuto: { value: 1 },
-    waterLevel: { value: 0 },
-    waterEnabled: { value: 1 },
-    waterDeep: { value: new THREE.Color(0.03, 0.12, 0.18) },
-    brushPos: { value: new THREE.Vector2() },
-    brushRadius: { value: 8 },
-    brushSquare: { value: 0 },
-    brushVisible: { value: 0 },
-    brushColor: { value: new THREE.Color(0.92, 0.95, 1.0) },
-    brushImg: { value: null },
-    brushImgOn: { value: 0 },
-    brushImgRot: { value: new THREE.Vector2(1, 0) },
-    gridVisible: { value: 0 },
-    climbCos: { value: 0 },
-    contourStep: { value: 0 },
-    unpaintable: { value: -1 },
-    chunkLineWorld: { value: 0 },
-    chunkHover: { value: new THREE.Vector4() },
-    tileWorld: { value: 0 },
-    maskTex: { value: null },
-    bakedShadowTex: { value: null },
-    bakedShadowOn: { value: 0 },
-    maskVisible: { value: 0 },
-    mapDataMode: { value: 0 },
-    chunkDataTex: { value: null },
-    selRect: { value: new THREE.Vector4() },
-    cellTex: { value: null },
-    selMode: { value: 0 },
-    selTime: { value: 0 },
-    refTex: { value: null },
-    refOpacity: { value: 0 },
-    refCentre: { value: new THREE.Vector2() },
-    refHalf: { value: new THREE.Vector2(1, 1) },
-    refRot: { value: new THREE.Vector2(1, 0) },
-    refEdit: { value: 0 },
-  }
-  return new THREE.ShaderMaterial({
-    // Double-sided, so going under the surface shows a ceiling rather than the world from below.
-    side: THREE.DoubleSide,
-    uniforms,
-    vertexShader: vertex,
-    fragmentShader: fragment,
-    fog: true,
-    lights: true,
-  })
+export function createTerrainMaterial(palette: THREE.Texture, slots: THREE.Texture, weights: THREE.Texture, worldSize: number, cellSize: number, chunkWorld: number, chunksSide: number): THREE.ShaderMaterial {
+	const uniforms: Record<string, THREE.IUniform> = {
+		...THREE.UniformsUtils.clone(THREE.UniformsLib.fog),
+		...THREE.UniformsUtils.clone(THREE.UniformsLib.lights),
+		palette: { value: palette },
+		slotTex: { value: slots },
+		weightTex: { value: weights },
+		chunksSide: { value: chunksSide },
+		chunkWorld: { value: chunkWorld },
+		rockLayer: { value: 3 },
+		worldSize: { value: worldSize },
+		paintOrigin: { value: new THREE.Vector2() },
+		cellSize: { value: cellSize },
+		lookTex: { value: null },
+		lookTime: { value: 0 },
+		sunDir: { value: new THREE.Vector3(0.5, 0.8, 0.3).normalize() },
+		sunColor: { value: new THREE.Color(1.0, 0.95, 0.85) },
+		clientLit: { value: 0 },
+		clientAmbient: { value: new THREE.Vector3() },
+		clientDiffuse: { value: new THREE.Vector3() },
+		clientSpecular: { value: new THREE.Vector3() },
+		clientPointCount: { value: 0 },
+		clientPointPos: { value: Array.from({ length: LIGHT_POOL }, () => new THREE.Vector3()) },
+		clientPointColor: { value: Array.from({ length: LIGHT_POOL }, () => new THREE.Vector3()) },
+		skyAmbient: { value: new THREE.Color(0.45, 0.5, 0.6) },
+		groundAmbient: { value: new THREE.Color(0.25, 0.22, 0.18) },
+		cliffAuto: { value: 1 },
+		waterLevel: { value: 0 },
+		waterEnabled: { value: 1 },
+		waterDeep: { value: new THREE.Color(0.03, 0.12, 0.18) },
+		brushPos: { value: new THREE.Vector2() },
+		brushRadius: { value: 8 },
+		brushSquare: { value: 0 },
+		brushVisible: { value: 0 },
+		brushColor: { value: new THREE.Color(0.92, 0.95, 1.0) },
+		brushImg: { value: null },
+		brushImgOn: { value: 0 },
+		brushImgRot: { value: new THREE.Vector2(1, 0) },
+		gridVisible: { value: 0 },
+		climbCos: { value: 0 },
+		contourStep: { value: 0 },
+		unpaintable: { value: -1 },
+		chunkLineWorld: { value: 0 },
+		chunkHover: { value: new THREE.Vector4() },
+		tileWorld: { value: 0 },
+		maskTex: { value: null },
+		bakedShadowTex: { value: null },
+		bakedShadowOn: { value: 0 },
+		maskVisible: { value: 0 },
+		mapDataMode: { value: 0 },
+		mapDataZone: { value: new THREE.Vector3() },
+		chunkDataTex: { value: null },
+		selRect: { value: new THREE.Vector4() },
+		cellTex: { value: null },
+		selMode: { value: 0 },
+		selTime: { value: 0 },
+		refTex: { value: null },
+		refOpacity: { value: 0 },
+		refCentre: { value: new THREE.Vector2() },
+		refHalf: { value: new THREE.Vector2(1, 1) },
+		refRot: { value: new THREE.Vector2(1, 0) },
+		refEdit: { value: 0 },
+	}
+	return new THREE.ShaderMaterial({
+		// Double-sided, so going under the surface shows a ceiling rather than the world from below.
+		side: THREE.DoubleSide,
+		uniforms,
+		vertexShader: vertex,
+		fragmentShader: fragment,
+		fog: true,
+		lights: true,
+	})
 }

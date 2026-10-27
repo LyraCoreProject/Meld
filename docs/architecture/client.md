@@ -4,7 +4,9 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
 
 - The asset source is the user's **local** WoW 1.12 client. `internal/mpq` reads the archives
   (our own reader; `Gophercraft/mpq` is GPL, so don't add it). `internal/wow` decodes BLP, M2 and
-  WMO files.
+  WMO files. `ReadPrefix` treats the block table as untrusted (#495): a file over 256 MiB unpacked
+  or packed past the archive's end, a short read, or a sector that unpacks to any length but its
+  own is an error (`errCorrupt`), never a huge allocation or a zero-filled or cut file.
 - `wow.Client.Handler()` serves `/wow/{status,list,texture,model}` (and `wmonav`, a WMO's room data,
   and `collision`, a model's collision faces and a WMO's liquids for the walkable-ground view, `wow/collision.go`; `main.go`
   routes `/wow/navtile`, a tile of the server's movement maps, to `App.serveNavTile`, as it needs the
@@ -17,14 +19,23 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   - Textures: `"RGBA" w h pixels`; with `fmt=dxt` (#178) a DXT BLP comes as `"DXT1"`/`"DXT3"`/`"DXT5"`
     w h, the mip count and each level's size and blocks (`Client.TextureDXT`), which `loadTexture`
     uploads as a `CompressedTexture` where the renderer has S3TC with sRGB.
-  - Meshes: `Mesh.Encode()` = JSON header + pos/normal/uv/[color]/u32 index.
+  - Meshes: `Mesh.Encode()` = u32 header length, JSON header (padded to 4), pos, normal, uv, [colour
+    u8x4], index (u32), [bone indices u8x4, bone weights u8x4], [rooms u16x2], [liquid pos, uv, info
+    u8x4, body u8x4, rooms u16x2, index (u32)]; the header's `colors`, `bones`, `rooms` and
+    `liquidVerts` say which optional sections follow. `parseMesh` (`wow/meshReply.ts`) reads it;
+    `parseCollision` there reads `/wow/collision`, `decodeWmoNav` (`world/wmoRoom.ts`) `/wow/wmonav`
+    and `parseNavTile` (`world/nav/navServer.ts`) `/wow/navtile`. Change an encoder and its parser
+    together: the wire fixtures pin them (#520, docs/tests/client.md).
 - The decoded replies stay in `Client.cache` (`bytecache.go`, an LRU bounded by `cacheLimit`, 512 MB: the oldest go first, #501; `TextureDXT` keeps an empty marker for a non-DXT BLP and serves the `tex:` entry) until a client change
   (`Client.Open`). A write into Meld's patch keeps them (#471): `vmangos.InstallPatch` closes the
   archives (`Suspend`) for its rename only, as Windows won't rename over a file Meld holds open, then
   `Resume` opens them again (listing their files again only when an archive changed) and `Forget`
   drops the replies built from the files the write changed; `AddPending` forgets the files it puts
   in the overlay. The app hands the client to vmangos with `vmangos.SetClientReader` in `NewApp`; a
-  binding that writes the patch needs nothing else. Reads fail only during the rename.
+  binding that writes the patch needs nothing else. `Suspend` waits for the reads in flight, and a
+  read that comes while the archives are closed waits for the `Resume` (up to `suspendWait`, 60 s)
+  instead of failing, which the frontend would draw as a placeholder for 30 s (#472); an `Open`
+  (the sandbox's switch, an unload) ends the wait too.
 - The doodads a WMO bakes in (`wmoMesh`) and their collision hulls (`wmoCollision`) are parsed once
   into `Client.parts` (`m2cache.go`, #500): an LRU of up to `partsLimit` (512) undressed M2 meshes
   and hulls by lower-case path, shared read-only (`wmoMesh` copies the arrays it transforms), so the
@@ -40,6 +51,12 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
 - The client path is persisted by `internal/config` (`os.UserConfigDir()/Meld/config.json`).
 - Coordinates: WoW model space is Z-up. `toEditor(x,y,z) = (x, z, -y)` is a proper rotation, so
   triangle winding is unchanged. 1 world unit ≈ 1 yard.
+- The 1.12 format's sizes (tile yards, chunks, cells, slots, liquid records, shadow bytes), the
+  zero point and the map-to-server axis swap live once in `lib/wow/format.ts` (`toServer`,
+  `fromServer`) and in Go in `internal/adt` (`ZeroPoint`, `ToServer`, `FromServer`, used by the
+  spawn reads and writes). Use them rather than writing the sum out: the server's x is the zero
+  point less the editor's z, its y the zero point less the editor's x (#538). The two sides are
+  checked against each other by `frontend/tests/fixtures/format.json` (docs/tests/client.md).
 - Frontend: `lib/models/assets.ts` is the registry for all placeable types.
   - `getAsset(type)` returns the asset immediately, or a placeholder while a WoW model loads.
   - `onAssetLoaded` lets `ObjectLayer` and the place-tool ghost swap the placeholder for the real
@@ -47,6 +64,10 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   - WoW meshes are one geometry with groups plus a material array, which keeps it at one
     `InstancedMesh` per type.
   - A model that fails to load is not cached: `loadAsset` warns and tries it again after `RETRY_MS`.
+    A WMO's room data and a model's collision faces do the same through `wow/loadCache.ts`'s
+    `LoadCache` (#515): a failure, the server's or the decoder's, is warned, counted (`failed`) and
+    handed to `onFail` (the Engine's status bar and Log line), and the first ask after `RETRY_MS`
+    loads it again.
     An M2 the client draws nothing of (no batch shown, no light, emitter or ribbon: an open door's
     collision blocker, an invisible trigger) is not a failure (#333): `ParseM2` returns
     `wow.ErrNothingToDraw`, `Client.Model` answers it with its collision hull as vertices and
@@ -74,6 +95,20 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
     0x2000) gets an unlit `MeshBasicMaterial` lit by its baked MOCV vertex colours, as in the game,
     so the sun, sky and shadows never reach the inside of a cave or building.
 
+- **Server tooling is Windows-only** (#483): `vmangos.OSRunner` finds and stops the server's programs
+  with `tasklist` and `taskkill` and runs its Windows extractors. Off Windows its `Running` reads
+  `/proc/*/comm` for the image name without `.exe` (a native Benilla) or with it (Wine), cut to comm's
+  15 characters, and `vmangos.StopCommand` gives `pkill` for the game's close (#730), so a patch write
+  there still waits for a running game; without a `/proc` (macOS) nothing runs. `vmangos.Supported(runner)` returns `ErrNeedsWindows`, which `UpdateServerMaps`,
+  `game.Session`'s server stop and `App.PlayHere` return instead of "not running"; `ensureDatabase`
+  starts the server folder's mariadbd only on Windows. A test's fake runner is always supported, and
+  tests set `hostOS` to check the guard on any machine.
+
+- **Reading the world database's output** (#478): `runSQL` gives mariadb's batch output (`-B -N`),
+  which escapes tabs, newlines, backslashes and NULs in a field. Read it only through
+  `internal/vmangos/batch.go`: `batchRows(raw, n)` (rows of n fields) or `batchLines(raw)` (any
+  width), which unescape every field, with `row.num`, `row.u32` and `row.f32` for numbers. Never call
+  `unescapeBatch` on their fields again: a second pass turns an escaped `\n` in a name into a newline.
 - **Spawn looks** (`internal/vmangos/looks.go`, `internal/wow/look.go`): a creature spawn's
   display is resolved in Go into a `wow.Look`: textures per replaceable M2 texture type (bake,
   hair, fur, creature skins), the character geosets shown (hair, facial hair, gear from
@@ -83,7 +118,20 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   (`spawnType` in `world/spawnInfo.ts`), so each look is one cached mesh and one InstancedMesh.
   Items are welded on in Go (`Mesh.Attach`) and bound to the attachment's bone, so GPU skinning
   carries them.
+- **Where a spawn stands** (#660): a creature or game object goes on the floor under the cursor,
+  `ctx.floor()` (`Engine.floorHit`): the nearer of the terrain and `ObjectLayer.raycastFloor`, with
+  the terrain see-through while the camera is under it (the ray march reports a hit at the camera
+  there) or the terrain is hidden. The Place tool's template preview and click, dragging a spawn or
+  a waypoint, and the spawn brush use it (`Engine.pick` aims the brush at it, and the brush's
+  per-point height casts `raycastFloor` down, skipping a point with no floor when the ground is far
+  overhead). Models keep `ctx.surface()`, which takes any surface. The answer is cached for 250 ms
+  while the cursor and camera stay put. From above the ground, grass over a cave is still the
+  ground: only an underground camera or hidden terrain looks through it.
 - **Spawn editing** (`world/spawnEdits.ts`): spawns are edited in place in the `SpawnLayer`
+  (the actions on them, placing, fields, paths, formations, pools, template updates, the spawn's
+  right-click menu and keys, are `engine/SpawnActions.ts` over a narrow `SpawnHost`; Engine forwards
+  the names components call, and a new spawn's guid or pool entry comes from `nextFreeGuid` and
+  `nextFreePoolEntry`, above the database's and every open tab's, #557)
   (keyed `kind/guid`), and every change is a `History` command. `SpawnLayer.touch` keeps a
   spawn's database state before its first edit, so `edits()` lists what changed (`SpawnChanges` re-compares only the spawns touched since the last count); File › Save Spawns to
   Database… (and Compile to Server and Compile All, #342) saves them with `ApplySpawnEdits` (SQL from `vmangos.SpawnSQL`, run through mariadb's stdin in
@@ -134,13 +182,13 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   no slots: its lines go to the members). `FormationFields` lists the group and its flags; Lead a
   formation and Add followers on the map make each clicked creature follow in a slot where it stands
   (`joinChanges`), Follow another joins the clicked creature's leader, and a follower dragged (or moved
-  by its fields, `slotFieldsAt` in the Select tool and `Engine.editSpawn`) takes its slot where it is
-  dropped; the slot's own fields move it into the slot (`Engine.setFormationSlot`). Formations don't
+  by its fields, `slotFieldsAt` in the Select tool and `SpawnActions.editSpawn`) takes its slot where it is
+  dropped; the slot's own fields move it into the slot (`SpawnActions.setFormationSlot`). Formations don't
   nest: a follower can't lead, and a leader with followers can't join another. The last follower
   leaving, Disband, and deleting the leader (`spawnDelete`) end the formation. The SQL
   (`formationSQL`) replaces a changed member's row, deletes a leaver's, deletes every row of a leader
   that stops leading, and a deleted creature's rows as member and leader.
-- **Picking spawns on the map** (`ui.spawnPick`, `Engine.startSpawnPick`, `Engine.pickSpawn`): like
+- **Picking spawns on the map** (`ui.spawnPick`, `SpawnActions.startSpawnPick`, `SpawnActions.pickSpawn`): like
   path editing, the Select tool's click on a spawn goes to `pickSpawn` instead of selecting
   (`ObjectTools` hook), each click one undo step through `spawnsChange` (several spawns, one
   command); `SpawnPickBar.svelte` says what a click does, Esc or Done stops, and selecting another
@@ -172,9 +220,98 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   the guide of `CreaturesWorkspace` (#260); Copy this creature in the header asks for a name and
   makes a copy (`CreateCreature`: the first free entry). Template edits are a form
   saved with Save (`SaveCreature`, the newest patch row), not undo steps;
-  `Engine.applyCreatureTemplate` then brings that creature's spawns up to date through
+  `SpawnActions.applyCreatureTemplate` then brings that creature's spawns up to date through
   `SpawnLayer.rebase`, which changes their saved state too. A template's columns are drawn by
-  `TemplateFields.svelte`, shared with the game object editor.
+  `TemplateFields.svelte`, shared with the game object editor: a `CreatureField`'s `options` give a
+  select, `flags` a tick list, `suggest` a text box with a datalist, `ref` a `RefField` picker.
+  The creature's `faction` is a `'faction template'` ref (FactionTemplate.dbc through `App.Factions`,
+  named with how it treats Alliance and Horde, #699), not `'faction'` (Faction.dbc, a reputation);
+  the pet family, race, AI and mask lists come from VMaNGOS' `CreatureDefines.h` and
+  `CreatureAIRegistry.cpp`. The Looks tab's "A click sets" fills a display slot or the mount.
+  The game object editor's fields (`lib/world/objectFields.ts`, #702) take the same `'faction
+  template'` ref, a cursor datalist for `icon`, and name a type's data columns by their label
+  (`DATA_REFS`): client table rows (`'lock'`, named by what opens it, `lib/wow/locks.ts`;
+  `'language'`, `'page material'`, `'spell focus'`, `'cinematic'`, `'taxi path'`, `'auction
+  house'`), read once through `App.ObjectTables` (`vmangos.LoadObjectTables`), and world database
+  rows (`'gossip'`, `'page'`, `'text'`, `'event'`, `'loot'`), named by their first line (HTML tags
+  dropped) or their size through `App.WorldRefNames`, batched as the template names are, and
+  searched with `App.SearchWorldRefs`. A `'creature'` or `'object'` ref alone keeps its sign: only
+  `'creature or object'` reads a negative as an object.
+  The item editor's fields (`lib/world/itemFields.ts`, #701) reuse `'lock'`, `'page'`, `'language'`
+  and `'page material'`, and add client table rows read once through `App.ItemTables`
+  (`vmangos.LoadItemTables`: `'item set'`, `'map'`, and `'spell category'`, named by its spells since
+  1.12 has no table of them) and world rows through the same `WorldRefNames` and `SearchWorldRefs`:
+  `'disenchant'` (by its items) and `'enchantment'` (an item_enchantment_template entry by its
+  ItemRandomProperties suffixes, which the binding names in Go from the client). Honor rank is a
+  select (`HONOR_RANKS`, 5 to 18).
+  The creature editor's list ids (#700) are world rows too: `'gossip'`, `'vendor'`, `'trainer'`,
+  `'equipment'`, `'creature loot'`, `'pickpocket loot'`, `'skinning loot'` and `'spell list'`, named
+  by what they hold (items, spells, weapons) with how many creature templates point at each
+  (`worldRefUses`, " · used by N creatures"). A field's `own` (`'entry'`, or `'tens'` for VMaNGOS'
+  entry × 10 spell lists, `ownListIds`) marks the creature's own list "(this creature's own)" and
+  offers it when Find opens; `TemplateFields` takes the record's `entry` as a prop, since a template
+  record's `values` leave it out. The Messages tab's option Menu, Script, Map point and Condition and
+  a text's Condition are `RefField`s too (`'gossip'`, `'gossip script'`, `'map point'`,
+  `'condition'`); `options` beside `ref` name special values (a menu's −1, "Closes the window").
+  Conditions are named in Go by what they test (`vmangos.conditionText`, after VMaNGOS'
+  `Conditions.h`, with factions, skills and zones from the client), so `WorldRefNames` and
+  `SearchWorldRefs` take the client folder for `'condition'` as for `'enchantment'`.
+  The quest editor's (#704) point map is a `'map'` ref, its condition a `'condition'`, its mail
+  template a `'mail template'` (MailTemplate.dbc, read once with the other quest tables through
+  `App.QuestTables`, named by the letter's first line since 1.12's table has no subject), its start
+  and end scripts world rows (`'quest start script'`, `'quest end script'`, named as gossip scripts
+  are, `own: 'entry'`; `TemplateFields`' `owner` prop says "this quest's own"), and its exclusive
+  group an `'exclusive group'` row (the quests sharing that ExclusiveGroup, so a new group is still
+  a typed number). The three reputation values offer the ranks in a datalist with the rank as the
+  note (`REP_RANKS`, `repText`), and RewRepSpilloverMask is a tick list (bit i stops faction i + 1's
+  spillover, `Player::RewardReputation`). PointOpt stays a number: VMaNGOS only passes it on.
+  Outside the template editors (#705) a `RefField` is used bare, with a `CreatureField` built in
+  place: the flight window's mount creatures and the Spells tab's target parameters (which editor a
+  parameter gets comes from its label, `paramKind` in `lib/wow/creatureSpellNames.ts`: a creature
+  entry, an aura spell, `SELECT_FLAGS` ticks or a Not its target checkbox; radii and health stay
+  numbers). The Zones dialog ticks AreaTable's flags (`AREA_FLAGS`) and lists LiquidType.dbc for the
+  liquid; Map Properties' ghost map is a select of `MapEntries`; a spawn's Display opens
+  `DisplayPicker` under the box.
+  The spell editor's fields (`lib/world/spellFields.ts`, #703) put the masks on two tabs: Needs
+  (forms by `1 << (form - 1)`, target flags, creature types by `1 << (type - 1)`, the item class with
+  its subclasses' tick list, which follows the class, and the slots; the aura states, spell focus and
+  reputation) and Flags (the attributes, interrupt, aura and channel interrupt and proc flags, all
+  from VMaNGOS' `SpellDefines.h`; the family; the second visual and the active icon). `spellTabs`
+  takes the spell's values, since the subclass list and each effect's misc value (`miscField`) follow
+  other columns: a creature, object, faction, skill, quest, language, lock type, flight path or event
+  picker, a power, dispel, mechanic, stat, form or modifier select, or a school, mechanic or creature
+  type tick list, by the effect and (for the aura effects) the aura, after VMaNGOS'
+  `SpellEffects.cpp` and `SpellAuras.cpp`; anything else stays a number. Its new ref kinds are
+  `'global category'`, `'spell icon'` and `'item enchantment'` (SpellItemEnchantment.dbc's names, an Enchant item effect's misc value; read once with the cast times through `App.SpellTables`,
+  `refNames.spellTables`, which the editor drops after a Save), `'spell visual'` (named by the spells
+  using it, found by taking another spell's) and `'lock type'` (`ObjectTables`' lock types).
+- **The editors' shared frame** (#576): the creature, game object, quest, item and spell editors
+  each keep their template row in a `TemplateEditor` (`lib/ui/templateEditor.svelte.ts`, Bun-tested
+  in `tests/templateEditor.test.ts`): `record`, `values` and `saved` with `changes` and `unsaved`
+  (the values, or the editor's own `dirty()`: tabs, a picked icon), `follow` (opens on the `ui`
+  slot, reading the row unless the target's `id` is the one open; `onopen` resets the editor's own
+  fields, `before` says what was open), `load` (a read overtaken by another opening or a close is
+  dropped), `leave(go)` (runs `go` now or after Discard them), `close`, `discard` (`onrevert`, then
+  `ondiscard` for tabs with their own Save), `reopen` (an import rewrote the open row) and `save`
+  (the Saving bar; a refused value's column goes to the editor to show its tab: Go refuses a value
+  with a `vmangos.ColumnError`, which `SaveQuest`, `SaveItem` and `SaveSpell` return as their
+  result's `refused` with a nil error, since Wails passes a returned error as its message only, and
+  `checkRefused` throws it as a `RefusedError` carrying the column, #597).
+  `components/EditorFrame.svelte` draws the frame: header (title and actions snippets, then Close),
+  the editor's own bars, the Discard bar, error and note, and Esc (a field first, then the editor's
+  `back()` steps, the Discard bar, then close; `blocked` while the quest editor or a right-click menu
+  is over it). Its `:global` rules style the editors' `.bar`s and `.body` (direct children only)
+  and every `nav.tabs`; the rest of each editor's layout stays in its own file. The editors read
+  the row through `$derived` aliases (`const values = $derived(ed.values)`): mutate `values[col]`,
+  but replace it through `ed.values`, `ed.markSaved()` or `ed.revert()`.
+- **Row-list tabs** (`lib/ui/rowList.svelte.ts`, #577): the Spells, Shop, Quests, Messages (its
+  options), Contents and Givers tabs keep their rows in a `RowList`: the rows, a key of the fields
+  that count (dirty when it differs from the key last read or saved), `load` (a read overtaken by a
+  later one is dropped), `follow` (reads again when the entry changes), `save` (the Saving bar and
+  the error), and `moveRow`/`removeRow`. Every one of these tabs exports `revert()`, which the
+  editors' Discard calls (the creature editor for its dirty tabs, the object editor and the quest
+  editor through their Revert), so a switch that keeps the tab mounted (another spawn of the same
+  creature) shows no stale edits.
 - **Spells** (`components/SpellsTab.svelte`, #243): the creature editor's tab for what the creature
   casts in combat, the eight slots of the `creature_spells` row its `spell_list_id` names
   (`internal/vmangos/creaturespells.go`: `ReadCreatureSpells`, `SaveCreatureSpells`), each with its
@@ -203,8 +340,8 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   `pickTrigger` (only while drawn; one the camera is inside is skipped). `triggerWins` settles it
   against `pickNearest`'s hit: a placed model wins only in front of the trigger (a dungeon portal
   stands in its building), a spawn inside it too. The menu's Teleport to destination, and a
-  spawn's Teleport items, call `io/mapio.ts` `teleportTo`. A spawn's items (#308) join its open menu
-  above Focus when `SpawnTeleports` answers (`Engine.addSpawnTeleports`; `menuSeq` and the title
+  spawn's Teleport items, call `io/region.ts` `teleportTo`. A spawn's items (#308) join its open menu
+  above Focus when `SpawnTeleports` answers (`SpawnActions.addTeleports`; Engine's `menuSeq` and the title
   drop an answer whose menu is gone): `internal/vmangos/teleport.go` gathers in one query every
   destination of a spell with a teleport effect (5) and a `spell_target_position` row, and every
   `TELEPORT_TO` (script command 6; a creature's own scripts with map 0 stay on its spawn's map) and
@@ -218,19 +355,36 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   view, not the game's character (Play here does that).
   A Select-tool left click that does not drag picks a trigger by the same rule (`Engine.triggerUnderPointer`,
   `finishTriggerClick`), and `ui.pickedTrigger` is the pick the Portals dialog follows and sets (#307).
+- **A spawn's scripts** (#137): the editors' This spawn tab (`SpawnFields.svelte`) lists, read-only,
+  what the world database attaches to the spawn (`ScriptFields.svelte`, the `SpawnScripts` binding,
+  `internal/vmangos/scripts.go`, one query): its template's `script_name` (C++), a creature's
+  `ai_name`, its EventAI events (`creature_ai_events`, their action scripts counted in
+  `creature_ai_scripts`) and its path's point scripts (`creature_movement_scripts`, from the spawn's
+  own `creature_movement` path, else its template's), and a game object's use scripts
+  (`gameobject_scripts`, by guid) and event (`event_scripts` and `scripted_event_id`, the event id in
+  the data field `GameObjectInfo::GetEventScriptId` reads: goober data2, chest data6, camera data2).
+  It reads the database as saved, not the spawn's unsaved edits; the scripts of its gossip
+  options (`gossip_menu_option.action_script_id`, through the menus the options open), of the quests
+  it starts and ends (`StartScript`, `CompleteScript`) and of a creature's spell list
+  (`creature_spells.scriptId_1..8`) are listed too (#736). A row with a `table` opens to its commands
+  (the lazy `ScriptCommands` binding, a whitelist of the script tables; names in
+  `lib/world/scriptCommands.ts`, from `ScriptCommands.h`); EventAI events do not open. A first step toward the node editor (#30) and Lua (#28).
 - **Flight paths** (#180): `internal/vmangos/taxi.go` reads and writes the client's three taxi tables
   (`LoadTaxiTables`, `ReadTaxiNetwork`, `SetTaxi`; 1.12 layouts: TaxiNodes 16 fields with the Horde
   mount at 14 and the Alliance one at 15, TaxiPath 4, TaxiPathNode 9). VMaNGOS reads the stops from
   the world database's `taxi_nodes` (the row of the highest build up to 5875; `TaxiSQL` writes 5875)
   and the routes and their points from its own `data/5875/dbc` copies of TaxiPath.dbc and
   TaxiPathNode.dbc (`InstallServerTaxi`), so `App.SaveTaxi` writes all three: SQL first, then the
-  patch and the server's tables inside one window with the game and the world server closed
-  (`installClosed` with `world`), so the restarted world server reads them. A stop's ID is 1 to 256 (the client's taxi mask); a route's points are rewritten
+  patch (or the files waiting for the game, #661) and the server's tables, closing nothing; the
+  result's `restart` tells the author to restart a running world server, which reads them only at
+  its start. A stop's ID is 1 to 256 (the client's taxi mask); a route's points are rewritten
   whole, reusing its old point IDs. `components/FlightPathsWindow.svelte` (World › Flight Paths,
   `ui.flightPaths`) is a floating window, not a dialog, so the map stays in reach, and a form saved
   with Save, not undo steps (as Zones and Portals, decision #83). It hands its stops and routes to
   `Engine.showTaxi` with `TaxiHooks`; `world/TaxiLayer.ts` draws them (also for View › Flight paths,
-  `prefs.showFlightPaths`) and picks markers, and `Engine.taxiPress` takes a left press before the
+  `prefs.showFlightPaths`, read once per tab through `engine/docOverlay.ts` `DocOverlay`, as the area
+  triggers are; a failed read warns in the console and says so in the status line, `failed`) and picks markers, and `engine/TaxiEditing.ts` (the viewport's half of the window,
+  which Engine forwards `showTaxi`, `flyTaxi` and the pointer events to) `press` takes a left press before the
   tool: a stop's marker drags over the ground, the picked route's points drag level (Shift: up and
   down), and with Draw points a click adds a point after the picked one at its height
   (`taxiRoute.ts` `airPoint`); with Draw points off, a click on a route's drawn curve picks that route
@@ -255,8 +409,19 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   GameObjectDisplayInfo row with a model from `ListObjectDisplays`, cached in Go with the object type
   and names of the templates using it, families by the model's folder; a click sets `displayId`,
   hovering previews it; the Go and frontend lists are forgotten on Save and New object, as their uses
-  change), and New object (`CreateObject`). The Object tab follows the spawn's entry
-  (an entry change or its undo). Save calls `Engine.applyObjectTemplate` (name, type, model through
+  change), Sounds (#674: `ObjectSoundsTab.svelte`, the ten sound slots of the template's display,
+  GameObjectDisplayInfo.dbc fields 2 to 11, SoundEntries IDs in wowdev's SoundSlot order: Stand, Open,
+  Loop, Close, Destroy, Opened, Custom 0 to 3; the client's looping sounds sit in Stand, Loop and
+  Custom 0. Read by `ObjectDisplaySounds` and written by `SaveObjectDisplaySounds`
+  (`internal/vmangos/objectsounds.go`: only that row's slots change, an unknown sound or display is
+  refused, a new row never made, since the server checks a template's display against its own copy
+  of the table) into Meld's patch through `queueClientFiles`, so it waits for a running game. The
+  edits are kept per display and saved by Save object after the template and contents; they change
+  every object of the display, which the tab says with the users from `loadDisplays`. A slot is set
+  from `SoundPicker.svelte`, the shared list of SoundEntries rows (`SoundEntries`, cached in the
+  page; `forgetSoundEntries` after an import, #684) with Play through `lib/ui/soundPlayer.svelte.ts`,
+  one sound at a time over `/wow/sound`), and New object (`CreateObject`). The Object tab follows the spawn's entry
+  (an entry change or its undo). Save calls `SpawnActions.applyObjectTemplate` (name, type, model through
   `ObjectModel`, size as scale) and forgets the Go and frontend object lists, so they are read again.
 - **Quest editor** (`components/QuestEditor.svelte`, `ui.questEditor`, #259): full screen (over the
   creature editor, z-index 160; the creature and object editors ignore Esc while it is open), opened
@@ -291,7 +456,9 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   read their lists again.
 - **Item editor** (`components/ItemEditor.svelte`, `ui.itemEditor`, #353): full screen (z-index 165),
   opened by Tools › Items… (`entry: 0`, find one; `-1`, a new item). The left finds items
-  (`SearchItems`); a result's right-click opens `ui.contextMenu` (z-index 180, over the editor, whose
+  (`SearchItemsSorted`, ordered in SQL before its limit of 100 by name, entry, quality, item level
+  or required level, up or down: `prefs.itemSort` and `itemSortDesc`, #677; a level order shows the
+  level on the right instead of the entry; the other item searches keep `SearchItems`, by name); a result's right-click opens `ui.contextMenu` (z-index 180, over the editor, whose
   Esc then leaves it to the menu) with Open and Copy `.additem <entry>`, the GM command that gives the
   item to the player selected or to yourself (`ClipboardSetText`); New item starts from a kind of item, a blank junk item or a copy of the open one: a kind is a
   (class, subclass, inventory type) group the world database has at least 3 of (`ListItemKinds` in
@@ -346,10 +513,11 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   another (Blizzard's display 35578 is a bow model with the crossbow's visual) with Make it shoot like
   a bow, a shot visual that waits for Save with the icon. A picked icon waits for Save, where `ItemDisplayVariant` finds the display that pairs the item's model
   and everything else with that icon and shot visual, or adds one (a copy of the item's display with the new icon,
-  the next ID) to ItemDisplayInfo.dbc in Meld's patch (`installWithGameClosed`), then
+  the next ID) to ItemDisplayInfo.dbc in Meld's patch (`installClientFiles`, waiting for a running game, #661), then
   `ForgetItemDisplays` drops the Go caches built from that table. Item tiles load their icons only
   once on screen (`ItemIcon` `lazy`).
-  The icon grid (here and in the spell editor) has Import PNG… and Export … as PNG… (#364,
+  The icon grid (`components/IconGrid.svelte`, which `ItemLookPicker` shows for its icons; the same
+  in the spell editor and the Icons tool, #683) has Import PNG… and Export … as PNG… (#364,
   `app_icons.go`, `internal/vmangos/icons.go`, `internal/wow/icon.go`). Import takes square PNG files,
   each named after its file (letters, digits, `_` and `-`, spaces as `_`), scaled to 64x64 by area
   (`resample`) and written as most of the client's icons are, DXT3 with mips (`EncodeOverlayBLP`), to
@@ -369,6 +537,39 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   `scriptTable` names the table and its second key, `patch` or `build`).
   Save and Import mark the items stale (`game.Stale.AddItem`), so the client's `itemcache.wdb` and
   `itemnamecache.wdb` drop them, and forget the session's rows and names (`forgetItemRow`, `forgetName`).
+- **Icons beside names** (#682): an item shows `ItemIcon` (its display, or an icon by name), a spell
+  `SpellIcon` (its SpellIcon.dbc path), and a thing known only by its number `RefIcon` (looks the name
+  up through `refNames` first). A field with `ref: 'item'` or `ref: 'spell'` gets its icon from
+  `RefField`, so naming a column in `*Fields.ts` is how an editor field gets one (the spell editor's
+  reagents and tools, an object's spell data columns: a `DATA_NAMES` name ending in "spell" or "aura").
+  Classes: `ClassIcon` cuts a cell of the 1.12 client's only class atlas,
+  `Interface\Glues\CharacterCreate\UI-CharacterCreate-Classes.blp` (`UI-Classes-Circles` is 2.x),
+  where GlueXML's `CLASS_ICON_TCOORDS` cuts it (`lib/wow/classes.ts`, `classIcons.ts`, alpha kept). A
+  field with `classes: 'mask'` (flag ticks, a ClassMask bit) or `classes: 'id'` (a select of class
+  IDs) shows it in `TemplateFields`. A `<select>`'s options cannot hold images, so a select shows the
+  picked value's icon beside it.
+- **Money** (#679): every amount of money (a quest's rewards, an item's prices and the money inside
+  it, a creature's or chest's coins, a flight's price, a gossip option's cost) is entered as gold,
+  silver and copper (`components/MoneyField.svelte`) and shown with the coins (`Money.svelte`, as the
+  item tooltip's sell price, `TooltipLine.money`). The databases keep the one copper count: a field
+  with `money: true` (or `'signed'`, with a Costs box for a negative count) in `*Fields.ts` gets the
+  control from `TemplateFields`, which writes the count back through the same `onset`. What is typed
+  stays as typed until the field is left (so 1000 silver can be typed), then rolls over. The coins
+  are cut from `Interface\MoneyFrame\UI-MoneyIcons.blp` (64 x 16, gold, silver, copper a quarter each,
+  as MoneyFrame.xml's TexCoords; there is no `UI-GoldIcon` in 1.12) by `lib/wow/coinIcons.ts`, alpha
+  kept; `Coin.svelte` shows the letter while it loads or without a client. The arithmetic is
+  `lib/wow/money.ts`.
+- **Icons tool** (`components/IconsWindow.svelte`, `ui.iconsTool`, #683): full screen (z-index 165),
+  opened by Tools › Icons… (`{ icon: '' }`; a name opens it on that icon). The shared `IconGrid`
+  (every icon by name, `iconsFirst="none"`, with Import PNG… and Export … as PNG…), and on the right
+  the picked (or hovered) icon at 128 px, its name and path, Copy name, Copy spell icon ID and Export
+  as PNG… of that one. An icon has no number of its own (it is a file): the owner's decision on #683
+  (1A) is that the only ID copied is its SpellIcon.dbc row (`SpellsWithIcon`, `internal/vmangos/spells.go`:
+  the lowest row naming `Interface\Icons\<name>` in any case, how many spells show it and a few by
+  name), disabled when no row has it yet (the spell editor adds one when a spell first takes it).
+  Items reach an icon through their ItemDisplayInfo.dbc display, so the tool only lists the items
+  whose displays show it (from `ListItemDisplays`' `uses` and `names`; none without the world
+  database). It writes nothing but the PNG import, through #364's path.
 - **Spell editor** (`components/SpellEditor.svelte`, `ui.spellEditor`, #294): full screen (z-index 165),
   opened by Tools › Spells… (`entry: 0`, find one; `-1`, a new spell). A spell lives in two places:
   the server reads `spell_template` (VMaNGOS keeps no Spell.dbc; a row per entry and client build,
@@ -379,7 +580,7 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   Other), with the effects, auras and targets named from VMaNGOS' `SpellDefines.h` and
   `SpellAuraDefines.h` and the cast time, duration, range and radius indexes from the client's
   tables (`ReadSpellTables`, `spelltables.go`). The right shows the icon (Change icon… turns the
-  middle into `ItemLookPicker`'s icon grid, `iconsFirst="spells"`; the picked name waits for Save),
+  middle into the shared `IconGrid`, `iconsFirst="spells"`; the picked name waits for Save),
   the tooltip (`spellTooltip`: name and rank, cost and range, cast time and cooldown, the description
   with `expandSpellText`, the TypeScript twin of Go's), the effects in a line each and the visual
   (`spellVisual1`, typed or taken from a browsed spell's `SpellRef.Visual`, its other users named by
@@ -397,7 +598,7 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   one (a copy of the visual it was read from with the stages, missile and area set; a missile or area
   taken from another visual brings its path, attachment and sound). Rows other spells use are never
   changed. The layouts (SpellVisual 16 fields, SpellVisualKit 35, SpellVisualEffectName 5) are in the
-  file's comment; `TestSpellVisualsLive` checks them against the client. `SaveSpell` (`app.go`) plans first (`PlanSpellSave`: the UPDATE by entry and
+  file's comment; `TestSpellVisualsLive` checks them against the client. `SaveSpell` (`app_spells.go`) plans first (`PlanSpellSave`: the UPDATE by entry and
   build, a picked icon's SpellIcon.dbc row found or added by `spellIconRow`, then the whole row as it
   will be written into Spell.dbc by `spellClientRow` over the client's record), runs the SQL, has the
   running world server `.reload spell_template` through its SOAP console when it's on
@@ -405,8 +606,12 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   the tables without closing anything (#365, `app_pending.go` `saveClientFiles`): into Meld's patch at
   once when the game isn't running, else into the waiting files in the user's cache
   (`internal/vmangos/pending.go`), which a watcher (`watchPending`, also started at Meld's start)
-  writes once the game has closed, and which any patch write that closes the game (`installClosed`,
-  Publish's `ExportMap`) takes along (`vmangos.InstallWithPending`). Patch writes run one at a time
+  writes once the game has closed, and which any patch write takes along
+  (`vmangos.InstallWithPending`). A watcher write that fails gives up (#481, `runPendingWatch`): at
+  once when no retry fixes it (the patch isn't Meld's), after `pendingTries` 30 s apart while the
+  patch stays in use (`vmangos.InUse`), saying so once in the status line and the Log
+  (`client:pending-failed`, `StatusBar.svelte`). The files keep waiting for the next patch write. Since #661 every client write goes this way (`installClient`): no
+  save closes the game. Patch writes run one at a time
   (`patchMu` in `install.go`, held by `InstallPatch` and by `InstallWithPending` around reading,
   writing and dropping the waiting files), so the watcher never rebuilds the patch beside another
   write and drops its files (#657). Meld's own reads of the client's tables (`readOverlay`, through `readClientFile`,
@@ -423,7 +628,7 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
   row comes to (`planScriptLooks`: a carried icon or visual is the client's row of that ID when it
   holds the same, else any row that does, else a new row at the end; the effect, sound and missile
   IDs inside are taken as stock), and an icon or visual ID this client lacks that the script doesn't
-  carry), then `ImportSpells` (`app.go`) rewrites the rows' IDs, runs them (`ImportSpellRows`),
+  carry), then `ImportSpells` (`app_spells.go`) rewrites the rows' IDs, runs them (`ImportSpellRows`),
   reloads the server's spells, and writes the added SpellIcon, SpellVisualKit and SpellVisual rows
   with each imported spell's Spell.dbc record, made from the row the server now uses
   (`SpellClientFiles`), through `saveClientFiles` as Save does. `spellDBCColumns`

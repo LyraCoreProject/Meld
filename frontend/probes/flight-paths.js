@@ -1,9 +1,18 @@
 // Flight paths (#180): World › Flight Paths in Redridge (Azeroth 36_49) reads Eastern Kingdoms' stops and routes, a click on Lakeshire's marker (stop 5) picks it and a drag moves it, a route picked from the list takes a drawn point, a click on a route's curve picks it, and Fly it moves the camera along the route and puts it back. Nothing is saved.
+// touches: frontend/src/lib/world/TaxiLayer.ts, frontend/src/lib/world/taxiRoute.ts, frontend/src/components/FlightPathsWindow.svelte, internal/vmangos/taxi.go, frontend/src/lib/engine/TaxiEditing.ts, frontend/src/lib/engine/docOverlay.ts
 const { ui } = await P.state()
-const confirmWas = window.confirm
-window.confirm = () => true
 try {
-	await P.scene({ v: 1, map: { region: { mapName: 'Azeroth', x: 36, y: 49, size: 1 } }, view: { target: [0, 0, 0], yaw: 0, pitch: 0.3, distance: 30, hour: 13 }, prefs: { cameraFollowGround: false }, tool: 'select', selectedIds: [], selected: null, area: null, viewport: [1000, 600] })
+	await P.scene({
+		v: 1,
+		map: { region: { mapName: 'Azeroth', x: 36, y: 49, size: 1 } },
+		view: { target: [0, 0, 0], yaw: 0, pitch: 0.3, distance: 30, hour: 13 },
+		prefs: { cameraFollowGround: false },
+		tool: 'select',
+		selectedIds: [],
+		selected: null,
+		area: null,
+		viewport: [1000, 600],
+	})
 	const e = P.e
 	const L = e.taxiLayer
 	ui.flightPaths = true
@@ -66,9 +75,23 @@ try {
 	ui.flightPaths = false
 	await P.frames(2)
 	const hidden = !L.group.visible
-	const ok = counts.stops >= 40 && counts.routes >= 100 && counts.visible && picked === 5 && moved > 1 && saveLabel === 'Save (1)' && routeId !== null && points >= 2 && byCurve === routeId && drawn === 1 && flying && flew > 10 && back < 0.01 && !ui.taxiFlying && hidden
+	const ok =
+		counts.stops >= 40 &&
+		counts.routes >= 100 &&
+		counts.visible &&
+		picked === 5 &&
+		moved > 1 &&
+		saveLabel === 'Save (1)' &&
+		routeId !== null &&
+		points >= 2 &&
+		byCurve === routeId &&
+		drawn === 1 &&
+		flying &&
+		flew > 10 &&
+		back < 0.01 &&
+		!ui.taxiFlying &&
+		hidden
 	return { ok, ...counts, picked, moved: +moved.toFixed(1), saveLabel, routeId, byCurve, points, drawn, flying, flew: +flew.toFixed(1), back, hidden }
 } finally {
 	ui.flightPaths = false
-	window.confirm = confirmWas
 }

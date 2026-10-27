@@ -113,7 +113,12 @@ Checks: the Water tool's liquid list is the client's LiquidType.dbc (`LiquidType
 Slime". `go test ./internal/vmangos/ -run TestLoadLiquidTypesFromClient` with `WOW_DIR` set reads
 the real table; `tests/liquidTypes.test.ts` covers the mapping. In the dev page the Water tool's
 select lists five liquids once the client is loaded, and a layer painted with 21 exports as slime
-(`liquidsToAdt` gives type 4) while the `.wmap` keeps 21.
+(`liquidsToAdt` gives type 4) while the `.wmap` keeps 21, and its header's `liquidKinds` keeps
+`{"21": "slime"}`, so the layer still draws and exports as slime when the file is opened before the
+table is read or against a client without row 21 (#540; `tests/mapData.test.ts`, "a liquid layer's
+kind", with row 30 as the missing one). Probe `liquid-kinds` saves a layer of row 30 through Go
+(`SaveSceneMap`, `LoadMap`) and checks the header, the reopened layer and its export as magma; it
+needs `make dev` rebuilt after a change to `mapfile.Header`, or Go drops the field.
 
 ## Selection outline colours (free, touching, buried)
 
@@ -197,7 +202,15 @@ reads Quality; after one setting changes it reads "Quality (custom)" with no pre
 
 Checks: which group of a placed WMO the camera is in (`world/wmoRoom.ts`, Benilla's `seed.rs`), shown
 as "Camera in" in Detail info. Unit cases are Benilla's own (`tests/wmoRoom.test.ts`); the client data
-is `TestClientWMONav` (WOW_DIR, the Goldshire inn: 12 groups, 10 portals, 2 fogs). Live, in the dev
+is `TestClientWMONav` (WOW_DIR, the Goldshire inn: 12 groups, 10 portals, 2 fogs).
+`tests/wmoRooms.test.ts` (#435) runs `WmoRooms.update` and the gate as `Engine.updateRoomGate`
+composes them (flood, `roomGate.ts`'s mask, `RoomAdmit`) on a fake object layer (`RoomLayer`, with
+the asset and room-data loaders handed to the constructor): a hall of three rooms and a sealed one.
+It checks the room inside a room's box and its neighbours through the doorways in view, the
+camera's room's spawns with no doorway in view (#156), `over` above a room's box or the building
+(#300), the outside flood and the WMO-only exemption (#271), and that a hidden building or a hidden
+Objects layer gates nothing (#142). The gate's uniforms are read by running a patched material's
+`onBeforeCompile` on a stub shader. Live, in the dev
 page: `const nav = e.rooms.navs.get('<lowercased wmo path>')` once the camera has been inside the WMO's
 box, take a flat face of `nav.walk[g]` (nine floats a triangle, WoW axes), lift it 1.7 yd, take it to
 editor space as `(x, z, -y)` and through `e.objects.matrixOf(o, m)`, then put the camera there:
@@ -357,6 +370,24 @@ what the worker built is what the main thread would have.
 - Unit: `frontend/tests/modelBuild.test.ts` (Bun has no `window`, so it runs the main-thread path of
   the same build and compares it with `buildBoundsTree`, `buildLod` and `WmoGroupCull.of`).
 
+## Far WMOs' LODs merged by class, textures in a layer array (#691)
+Checks: a far WMO's LOD draws a few groups (one a class: lit or unlit, blend, sides) instead of one
+a texture, its textures drawn small into one shared array (`models/farLayers.ts`), and looks as the
+full model does.
+- Probe: `bun run probe far-wmo-lod` (about 90 s). Opens Elwynn's world view, counts the far WMO LODs
+  drawn and their groups, checks every layer taken was drawn, then shoots Goldshire's two-story
+  house close up with every instance forced to its LOD (`cullView.lodPx` overridden) and the
+  doodads hidden (`layers.set(7)`): the LOD's picture is far closer to the full house's than the
+  picture with the LOD's class materials hidden.
+- Measured on 2026-10-26 (the probe's view, Elwynn 31-33 x 48-50): 4,070 render calls to 1,990, CPU
+  frame 21 ms to 16 ms; the 70 far WMO LODs drawn had 2,407 groups, 334 merged.
+- Trap: forcing the LOD by lowering `LOD_PX` doesn't work at run time (a constant the Engine writes
+  into the cull view each frame); define a getter on `e.cullView.lodPx` and delete it after.
+- Trap: the merged LOD has vertex buffers of its own, so the `model-worker` probe compares it with
+  `farMerge` of the main-thread LOD (`userData.farClasses`), not with `lodIndex`'s index.
+- Unit: `frontend/tests/farLayers.test.ts` (the plan's classes and tints, the merge's groups, runs and
+  copied vertices).
+
 ## Compressed client textures (DXT, #178)
 Checks: model, liquid and particle textures go to the GPU as the BLP's own DXT blocks and mips where
 the renderer has `WEBGL_compressed_texture_s3tc` and `..._s3tc_srgb`, and look as the RGBA path did.
@@ -498,6 +529,20 @@ hole in the ground still shows its dark earth, not the sky dome.
 - Hole: a flat map with a hole cut (`setHoleInSelection`), seen from above, shows the dark earth
   through it as before. The sea (an archipelago map) looks the same before and after.
 
+## A map with no sky shows the dark earth behind it (#339)
+
+Checks: `Engine.noSky` and `updateEnvironment`: Uldaman (a dungeon with no WDL far terrain around its
+region) shows `EARTH` (63,58,53 on screen) behind the map at every pitch and hour, with the editor's
+lighting and the client's, and the sky dome is hidden; Northshire keeps its sky.
+- Probe: `bun run probe sky-dungeon` (about 25 s): the owner's Uldaman view at pitch 0.32, 0.08 and
+  -0.3, at hour 13 and 0, Client Lighting off and on, reading the top-middle pixel. Before the fix
+  pitch 0.08 showed the dome's near-white horizon band (246,249,250).
+- Why it turned white: the grey/brown was never a sky colour but `Water.floor` (40 yd below the sea
+  level) seen from above; Uldaman's halls lie at about -76, so a camera pitched toward the horizon
+  dropped below the plane, which is one-sided, and saw the dome.
+- Trap: every client map, dungeons too, has a global light in Light.dbc, so the lights cannot tell a
+  map without a sky; the WDL (`RegionHorizon`) around the region can.
+
 ## A WMO's liquids: Blackrock Depths' lava (#287)
 
 Checks: a WMO group's MLIQ (`internal/wow/wmoliquid.go`) reaches the frontend after the mesh
@@ -559,6 +604,21 @@ faces, however far it moves in a frame, and slides it along them; with it off th
   and the near plane at 0.5 yd; off, it ends 9.5 yd past the wall in SI:7 (group 111).
 - Unit test: `bun test tests/wmoRoom.test.ts` ("a sphere moved into a wall ..."): stop, slide, floor,
   push-out and a free move on a toy room, with and without the column index.
+- Unit test of the order (#434): `bun test tests/cameraMove.test.ts` runs the controller's collision
+  step (`cameraMove.ts` `moveStep`) on a toy street (a floor 5 yd under a flat terrain, a wall) through
+  the same `collideSphere` and `walkFloorZ` the Engine's hooks use: the eye stops the radius off the wall
+  and slides, stays 3 yd over the WMO floor rather than the terrain, and under a low ceiling the walls
+  win over the clamp (the clamp first, then the walls); the walker stands on the floor, climbs a 1.5 yd
+  step, walks under a roof and stops at the wall with Camera Collision on or off; off, the flying camera
+  passes through; a jump and the orbit and top-down cameras are not collided; the near plane
+  (`nearPlane`, #304) pulls in for a face within reach, to 0.05 yd at least. The radius is 0.73 yd at
+  16:9 (0.5 yd times `cornerFactor`), wider at a wider window, so test against the formula, not 0.9.
+- Room data that fails (#515): `bun run probe wmo-nav-fail` (about 15 s with the scene loaded) makes
+  `/wow/wmonav` answer 500 once for Stormwind (it wraps `window.fetch`), and checks the failure is
+  counted in `rooms.navs.failed` and logged (`Building rooms: ... didn't load`), the camera is in no
+  room and the file is not fetched again each frame, then moves the cache's clock (`rooms.navs.now`)
+  past `RETRY_MS` and checks the retry loads it and the camera is in room 49 again. The cache itself:
+  `bun test tests/loadCache.test.ts` (a truncated body for `decodeWmoNav`, the retry, a forget mid-load).
 - The clamp (#310): the probe's `low` step lowers the eye 4 yd from its start and checks it stops 3 yd
   over the Trade District street's floor (`WmoRooms.floorAt`), in room 49, below the terrain there; `on.lift`
   checks the start eye set by `setSceneView` is not lifted.
@@ -566,10 +626,24 @@ faces, however far it moves in a frame, and slides it along them; with it off th
   probe's start, 7.5 yd under it 14 yd away), so a check of the camera's height there must measure from
   `rooms.floorAt`, not `terrain.heightAt`. A view set by `setSceneView`
   or `focus` is a jump and is not collided, so an eye placed inside a wall stays there until it moves.
-- Camera › Walk on the WMO floor (#312): `bun run probe walk-wmo` (about 60 s, most of it loading the
+- Camera › Walking View on the WMO floor (#312): `bun run probe walk-wmo` (about 60 s, most of it loading the
   scene) starts the walk 1 yd over the probe's start and walks 20 yd each way along the street, one
   frame a 0.5 yd step: in rooms 49, 48 and 50 the eye stays 3 yd over `rooms.floorAt` while its height
   over the terrain runs from -0.5 to 8.7 yd. On the old code (eye 3 yd over the terrain) it is 3.5 yd
   off. Then (#313) it walks 6 yd at the room's south wall from 3 yd back: it stops 0.89 yd off it, in
   room 49 (`atWall`); on the old code it ends 2.5 yd through it, in 111 SI:7. With the walls the street
   walk stays in the rooms (80 samples, 47 before). Trap: starting the walk 6 yd up lands on the top of a wall by the street, a walking face too.
+
+## The instance batch: culling, packing and picking of placed models and spawns (#517)
+
+- `bun test tests/instanceBatch.test.ts`: `world/instanceBatch.ts` on its own (the rows in view packed
+  to the front with their items, a repack forced after rows are rewritten, a moved row written in place
+  with a range or the whole buffer while a pack is pending, a ray hit naming its item) and a
+  `SpawnLayer` picking a marker spawn through its packed instance, before and after a move. Marker
+  spawns (no model, `model: ''`) need no client, so the test runs anywhere.
+- In the live app, the probes over both layers: `perf-objects-mixed`, `perf-creatures`, `pose-drawn`,
+  `shadow-redraw`, `object-move`, `attach-follow`, `spawn-drag`, `nothing-to-draw`. `object-move`
+  counts `InstanceBatch.pack` calls during a drag (none), so it counts the spawn layer's packs too:
+  run it on a new document without spawns, as it does.
+- Probes that peek at ObjectLayer's batches read the rows as `b.rows.items`, `b.rows.matrices`,
+  `b.rows.spheres` and `b.rows.packed` (not `b.all` and the rest, before #517).

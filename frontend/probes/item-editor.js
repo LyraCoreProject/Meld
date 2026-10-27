@@ -1,5 +1,6 @@
-// The item editor (#353): Tools › Items… finds the Worn Shortsword (25), whose right-click copies `.additem 25`, and shows its tooltip as the game does (slot, type, damage, speed, damage per second), a character holding it and the sword alone; typed values change the tooltip before saving, a chest piece with the sword's look paints nothing and with the Robes of Arcana's is worn on the body (#356), the Stats tab holds one stat a row and adds Healing +22 as an Equip effect, Save refuses a level past 255 and shows the tab it is on, a bow on a crossbow-shooting look is flagged with Make it shoot like a bow and Change look lists bow shooters only, New item… offers Weapon › Bow · Ranged (bow) with the usual basics, Revert drops the edits, Change look… shows the item large over the client's looks, where the Battleworn Hammer's look previews on hover, is picked by a click and applied by Change look (back to the fields, held), and Change icon… marks an icon to be made on Save, Esc leaving the view, and a set piece (Blackened Defias Belt) shows its set's name, members and bonuses (#355); nothing written.
-const { ui } = await P.state()
+// The item editor (#353): Tools › Items… finds the Worn Shortsword (25), whose right-click copies `.additem 25` or its entry (#681), and shows its tooltip as the game does (slot, type, damage, speed, damage per second), a character holding it and the sword alone; typed values change the tooltip before saving, a chest piece with the sword's look paints nothing and with the Robes of Arcana's is worn on the body (#356), the Stats tab holds one stat a row and adds Healing +22 as an Equip effect, a level past 255 is an unsaved edit (Go refuses it, a Go test; Save is never pressed), a bow on a crossbow-shooting look is flagged with Make it shoot like a bow and Change look lists bow shooters only, New item… offers Weapon › Bow · Ranged (bow) with the usual basics, Revert drops the edits, Change look… shows the item large over the client's looks, where the Battleworn Hammer's look previews on hover, is picked by a click and applied by Change look (back to the fields, held), and Change icon… marks an icon to be made on Save, Esc leaving the view, and a set piece (Blackened Defias Belt) shows its set's name, members and bonuses (#355), and "sword" sorted by item level high to low (#677) lists the levels falling, with the level on the right, then by name again; nothing written.
+// touches: frontend/src/components/ItemEditor.svelte, frontend/src/components/ItemTooltip.svelte, frontend/src/components/ItemTooltipBox.svelte, frontend/src/lib/wow/itemTooltip.ts, frontend/src/lib/world/itemFields.ts, internal/vmangos/items.go, frontend/src/components/EditorFrame.svelte, frontend/src/lib/ui/templateEditor.svelte.ts, internal/vmangos/vendor.go, app_items.go
+const { ui, prefs } = await P.state()
 P.e.newDocument(256, 'flat', 0, 'Probe')
 await P.frames(1)
 const WAIT = 120_000
@@ -18,8 +19,7 @@ const openTab = async (name) => {
 	await P.frames(1)
 }
 /** A field's input or select, by its label. */
-const field = (label) =>
-	[...root().querySelectorAll('.grid > label')].find((l) => (l.querySelector('span')?.textContent ?? l.firstChild?.textContent ?? '').split(' · ')[0].trim() === label)?.querySelector('input, select')
+const field = (label) => [...root().querySelectorAll('.grid > label')].find((l) => (l.querySelector('span')?.textContent ?? l.firstChild?.textContent ?? '').split(' · ')[0].trim() === label)?.querySelector('input, select')
 const tooltip = () => [...root().querySelectorAll('.tooltip .line')].map((l) => [...l.querySelectorAll('span')].map((s) => s.textContent.trim()).join(' | '))
 const look = () => root().querySelector('.preview-text')?.textContent.trim() ?? ''
 
@@ -37,6 +37,12 @@ await P.until(() => root().querySelector('.bar.ok, .bar.error'), WAIT, 'the copy
 menu.note = root().querySelector('.bar.ok, .bar.error').textContent.trim()
 menu.clipboard = await window.runtime.ClipboardGetText().catch((e) => `(${e})`)
 menu.closed = !ui.contextMenu && !!root()
+// Copy id (#681): the same menu copies the plain entry.
+hit.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 160 }))
+await P.frames(1)
+;[...document.querySelectorAll('.menu[role=menu] button')].find((b) => b.textContent.trim() === 'Copy item entry 25').click()
+await P.until(() => ui.status.includes('Copied item entry 25'), 10_000, 'the copy')
+menu.entryCopied = !ui.contextMenu && (await window.runtime.ClipboardGetText().catch((e) => `(${e})`)) === '25'
 hit.click()
 await P.until(() => tooltip().length > 2 && look().startsWith('Held'), WAIT, 'the tooltip and the held sword')
 const title = root().querySelector('h2').textContent.trim()
@@ -71,15 +77,11 @@ const robe = look()
 type(displayInput, swordLook)
 await P.until(() => look().startsWith('Its display has nothing'), WAIT, 'the sword look back')
 
-// A level past a tinyint's 255: refused before anything is written, on its tab.
+// A level past a tinyint's 255 is an unsaved edit; Go's refusal is a Go test (TestEditorSavesRefuseOutOfRangeValues, #419), so Save is never pressed.
 await openTab('Requirements')
 type(field('Level'), '300')
 await openTab('Item')
 const saveText = button(root().querySelector('header .actions'), 'Save')?.textContent.trim()
-button(root().querySelector('header .actions'), 'Save').click()
-await P.until(() => root().querySelector('.bar.error'), WAIT, 'the refusal')
-const error = root().querySelector('.bar.error').textContent
-const jumped = root().querySelector('nav.tabs button.on')?.textContent.trim()
 button(root().querySelector('header .actions'), 'Revert').click()
 await P.frames(2)
 const reverted = button(root().querySelector('header .actions'), 'Saved') !== undefined && tooltip()[0] === tip[0]
@@ -209,28 +211,51 @@ const setBlock = {
 	bonuses: setTip.filter((l) => /^\(\d\) Set: /.test(l)),
 	headerColor: [...root().querySelectorAll('.tooltip .line')].find((l) => l.textContent.startsWith('Defias Leather ('))?.style.color ?? '',
 }
+
+// The search's order (#677): "sword" by item level, high to low, then back to the user's order.
+const was = { sort: prefs.itemSort, desc: prefs.itemSortDesc }
+const results = () => [...root().querySelectorAll('[aria-label="Items found"] button')].map((b) => b.querySelector('.dim')?.textContent.trim() ?? '')
+type(root().querySelector('aside input[type=search]'), 'sword')
+choose(root().querySelector('[aria-label="Sort items by"]'), 'itemLevel')
+if (!prefs.itemSortDesc) root().querySelector('[aria-label="Sort direction"]').click()
+await P.until(() => results().length > 10 && results().every((t) => t.startsWith('ilvl ')), WAIT, 'the swords by item level')
+const levels = results().map((t) => Number(t.slice(5)))
+const sorted = { count: levels.length, first: levels.slice(0, 5), falling: levels.every((l, i) => i === 0 || l <= levels[i - 1]), arrow: root().querySelector('[aria-label="Sort direction"]').textContent.trim() }
+choose(root().querySelector('[aria-label="Sort items by"]'), 'name')
+await P.until(() => results().length > 10 && !results()[0].startsWith('ilvl '), WAIT, 'the swords by name')
+sorted.byName = /^\d+$/.test(results()[0])
+prefs.itemSort = was.sort
+prefs.itemSortDesc = was.desc
 ui.itemEditor = null
 await P.frames(1)
 
 const ok =
 	/^Bow · Ranged \(bow\) \(\d+\)$/.test(kind.bow) &&
 	kind.text.startsWith("It gets what most of the world database's bow · ranged (bow) items have") &&
-	kind.start.length === 3 && kind.start[0] === 'A kind of item' && kind.start[2].startsWith('A copy of Worn Shortsword') &&
+	kind.start.length === 3 &&
+	kind.start[0] === 'A kind of item' &&
+	kind.start[2].startsWith('A copy of Worn Shortsword') &&
 	kind.disabledWithoutName &&
 	shot.warn.startsWith('This look shoots like a crossbow (its shot visual 743), so the game fires a bow on it like one.') &&
 	shot.pending.startsWith('Save makes the look shoot like a bow (shot visual 5)') &&
 	shot.save === 'Save item (4)' &&
 	shot.fits === 'Fits it: shoots like a bow' &&
-	shot.titles.length > 0 && shot.titles.every((t) => t.includes('Shoots like a bow')) &&
+	shot.titles.length > 0 &&
+	shot.titles.every((t) => t.includes('Shoots like a bow')) &&
 	shot.reverted &&
-	stats.row1 && stats.row2 &&
+	stats.row1 &&
+	stats.row2 &&
 	stats.tooltip === 'Equip: Increases healing done by spells and effects by up to 22.' &&
 	stats.listed.includes('Healing +22') &&
 	stats.save === 'Save item (2)' &&
 	stats.removed &&
 	menu.title === 'Worn Shortsword' &&
-	menu.items.join('|') === 'Open|Copy .additem 25 to the clipboard' &&
-	menu.shown && menu.closed &&
+	menu.items.slice(0, 2).join('|') === 'Open|Copy .additem 25 to the clipboard' &&
+	menu.items.includes('Copy item entry 25') &&
+	menu.items.at(-1) === 'Copy name' &&
+	menu.entryCopied &&
+	menu.shown &&
+	menu.closed &&
 	menu.note.startsWith('Copied .additem 25: paste it') &&
 	menu.clipboard === '.additem 25' &&
 	title === 'Worn Shortsword' &&
@@ -247,8 +272,6 @@ const ok =
 	chest.startsWith('Its display has nothing') &&
 	robe.startsWith('Worn on the body, on a') &&
 	saveText === 'Save item (5)' &&
-	error.includes('required_level must be from 0 to 255') &&
-	jumped.startsWith('Requirements') &&
 	reverted &&
 	stored.values.name === 'Worn Shortsword' &&
 	stored.values.required_level === '1' &&
@@ -256,9 +279,12 @@ const ok =
 	taken.look.startsWith('Held in hand') &&
 	taken.tiles >= 1 &&
 	taken.tileTitle.includes('Battleworn Hammer') &&
-	taken.view.label === 'Change look' && taken.view.fieldsHidden && taken.view.bigModel &&
+	taken.view.label === 'Change look' &&
+	taken.view.fieldsHidden &&
+	taken.view.bigModel &&
 	taken.hoverKept === '1542' &&
-	taken.gapKept && taken.gridCleared &&
+	taken.gapKept &&
+	taken.gridCleared &&
 	taken.picked.includes('Picked display 8690') &&
 	taken.back &&
 	iconPick.pending.startsWith('Icon INV_Axe_01') &&
@@ -267,6 +293,11 @@ const ok =
 	setBlock.header === 'Defias Leather (0/5)' &&
 	setBlock.members === 5 &&
 	setBlock.bonuses.length >= 2 &&
-	setBlock.bonuses[0].startsWith('(2) Set: ') && !setBlock.bonuses.some((l) => l.includes('spell ')) &&
-	setBlock.headerColor === 'rgb(255, 210, 0)'
-return { ok, setBlock, kind, shot, stats, menu, taken, iconPick, title, tip, held, canvas, alone, edited, nameColor, chest, robe, saveText, error, jumped, reverted, stored: { name: stored.values.name, level: stored.values.required_level } }
+	setBlock.bonuses[0].startsWith('(2) Set: ') &&
+	!setBlock.bonuses.some((l) => l.includes('spell ')) &&
+	setBlock.headerColor === 'rgb(255, 210, 0)' &&
+	sorted.falling &&
+	sorted.first[0] >= 60 &&
+	sorted.arrow === '↓' &&
+	sorted.byName
+return { ok, sorted, setBlock, kind, shot, stats, menu, taken, iconPick, title, tip, held, canvas, alone, edited, nameColor, chest, robe, saveText, reverted, stored: { name: stored.values.name, level: stored.values.required_level } }

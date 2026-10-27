@@ -1,4 +1,5 @@
 // The display picker's tiles fill the row (#389): in the new-creature guide's "How it looks" step, the first row of the grid holds the columns that fit at the smallest tile and its last tile ends within a few pixels of the grid's inner right edge.
+// touches: frontend/src/components/DisplayPicker.svelte, frontend/src/components/CreaturesWorkspace.svelte
 const { ui } = await P.state()
 ui.creatures = true
 await P.frames(5)
@@ -15,11 +16,11 @@ const next = async () => {
 }
 await type(q('input[placeholder="Gregor the Smith"]'), 'Probe')
 await next()
-await P.until(() => q('input[name="faction"]'), 'factions')
+await P.until(() => q('input[name="faction"]'), 60_000, 'factions')
 q('input[name="faction"]').click()
 await P.frames(3)
 await next()
-await P.until(() => q('[aria-label="Creature displays"] .grid > *'), 'tiles')
+await P.until(() => q('[aria-label="Creature displays"] .grid > *'), 60_000, 'tiles')
 await P.frames(10)
 const wrap = q('[aria-label="Creature displays"]')
 const tiles = [...wrap.querySelectorAll('.grid > *')]

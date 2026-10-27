@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { startSaving } from '../lib/state/saving'
+	import { idMenu, idOf } from '../lib/ui/copyId'
 	import { ReadCreatureQuests, ReadObjectQuests, SaveCreatureQuests, SaveObjectQuests, SearchQuests } from '../../wailsjs/go/main/App'
 	import { vmangos } from '../../wailsjs/go/models'
 	import { setStatus, ui } from '../lib/state/editor.svelte'
+	import { RowList, removeRow } from '../lib/ui/rowList.svelte'
 
 	// The Quests tab of the creature editor (#145) and of the game object editor (#293): the quests
 	// the creature or object starts (creature_questrelation, gameobject_questrelation) and ends (the
@@ -12,36 +13,26 @@
 	// object must be of the Quest giver type (2), which Meld never changes for the author (#293's
 	// decision): an object of another type gets no new quests, and says why.
 
-	let {
-		kind = 'creature',
-		entry,
-		name,
-		ready,
-		onquestflag,
-		dirty = $bindable(false),
-	}: { kind?: 'creature' | 'object'; entry: number; name: string; ready: boolean; onquestflag?: () => void; dirty?: boolean } = $props()
+	let { kind = 'creature', entry, name, ready, onquestflag, dirty = $bindable(false) }: { kind?: 'creature' | 'object'; entry: number; name: string; ready: boolean; onquestflag?: () => void; dirty?: boolean } = $props()
 
 	/** An object that is not a quest giver can't be given quests; a creature can, and is warned. */
 	const refused = $derived(kind === 'object' && !ready)
 	const what = $derived(kind === 'object' ? 'object' : 'creature')
 
 	type List = 'starts' | 'ends'
-	let quests = $state<{ starts: vmangos.QuestRef[]; ends: vmangos.QuestRef[] }>({ starts: [], ends: [] })
-	let saved = $state('')
-	let loading = $state(false)
-	let saving = $state(false)
-	let error = $state('')
-
-	const key = (q: typeof quests) => JSON.stringify([q.starts.map((r) => [r.quest, r.patchMin, r.patchMax]), q.ends.map((r) => [r.quest, r.patchMin, r.patchMax])])
-	$effect(() => {
-		dirty = saved !== '' && key(quests) !== saved
+	type Lists = { starts: vmangos.QuestRef[]; ends: vmangos.QuestRef[] }
+	const lists = new RowList<Lists>({
+		empty: { starts: [], ends: [] },
+		read: async () => {
+			const q = await (kind === 'object' ? ReadObjectQuests : ReadCreatureQuests)(entry)
+			return { starts: q.starts ?? [], ends: q.ends ?? [] }
+		},
+		key: (q) => JSON.stringify([q.starts.map((r) => [r.quest, r.patchMin, r.patchMax]), q.ends.map((r) => [r.quest, r.patchMin, r.patchMax])]),
 	})
-
-	let loadedFor = -1
+	const quests = $derived(lists.rows)
+	lists.follow(() => entry)
 	$effect(() => {
-		if (entry === loadedFor) return
-		loadedFor = entry
-		void load()
+		dirty = lists.dirty
 	})
 
 	// The quest editor saved (a title, or this creature's quests from the quest's side): read the
@@ -51,7 +42,7 @@
 		const v = ui.questsVersion
 		if (v === version) return
 		version = v
-		if (!dirty) void load()
+		if (!dirty) void lists.load()
 	})
 
 	const giver = () => ({ kind, id: entry, name, ready })
@@ -64,48 +55,25 @@
 		ui.questEditor = { entry: -1, giver: giver() }
 	}
 
-	async function load() {
-		loading = true
-		error = ''
-		try {
-			const q = await (kind === 'object' ? ReadObjectQuests : ReadCreatureQuests)(entry)
-			quests = { starts: q.starts ?? [], ends: q.ends ?? [] }
-			saved = key(quests)
-		} catch (err) {
-			error = String(err)
-		} finally {
-			loading = false
-		}
-	}
-
-	/** Drops the unsaved lists (the editor's Discard). */
+	/** Drops the unsaved lists (the tab's Revert, the editor's Discard). */
 	export function revert() {
-		void load()
+		void lists.revert()
 	}
 
-	async function save() {
-		saving = true
-		const end = startSaving('Saving the quest givers')
-		error = ''
-		try {
-			await (kind === 'object' ? SaveObjectQuests : SaveCreatureQuests)(entry, vmangos.QuestLists.createFrom($state.snapshot(quests)))
-			saved = key(quests)
-			setStatus(`Saved the quests of ${kind === 'object' ? 'game object' : 'creature'} ${entry}: starts ${quests.starts.length}, ends ${quests.ends.length}. Restart the world server to see them in the game.`, 10000)
-		} catch (err) {
-			error = String(err)
-		} finally {
-			saving = false
-			end()
-		}
+	function save() {
+		void lists.save('Saving the quest givers', async (q) => {
+			await (kind === 'object' ? SaveObjectQuests : SaveCreatureQuests)(entry, vmangos.QuestLists.createFrom($state.snapshot(q)))
+			setStatus(`Saved the quests of ${kind === 'object' ? 'game object' : 'creature'} ${entry}: starts ${q.starts.length}, ends ${q.ends.length}. Restart the world server to see them in the game.`, 10000)
+		})
 	}
 
 	function remove(list: List, i: number) {
-		quests[list] = quests[list].filter((_, k) => k !== i)
+		lists.rows[list] = removeRow(lists.rows[list], i)
 	}
 
 	function add(list: List, r: vmangos.QuestRef) {
 		if (refused || quests[list].some((q) => q.quest === r.quest)) return
-		quests[list] = [...quests[list], vmangos.QuestRef.createFrom({ ...r, patchMin: 0, patchMax: 10 })]
+		lists.rows[list] = [...quests[list], vmangos.QuestRef.createFrom({ ...r, patchMin: 0, patchMax: 10 })]
 	}
 
 	// Adding: a search over quest_template by title or entry.
@@ -126,7 +94,7 @@
 				const r = await SearchQuests(q)
 				if (q === query.trim()) results = r ?? []
 			} catch (err) {
-				error = String(err)
+				lists.error = String(err)
 			} finally {
 				searching = false
 			}
@@ -135,11 +103,11 @@
 </script>
 
 <div class="quests">
-	{#if error}<p class="error">{error}</p>{/if}
+	{#if lists.error}<p class="error">{lists.error}</p>{/if}
 	{#if refused}
 		<p class="warn">
-			This object is not a Quest giver (type 2), so it can't offer or take quests{quests.starts.length > 0 || quests.ends.length > 0 ? ': the server ignores the ones below' : ''}. To give it
-			quests, set its Type to Quest giver under Object and save the object, or use a quest giver object such as a wanted poster.
+			This object is not a Quest giver (type 2), so it can't offer or take quests{quests.starts.length > 0 || quests.ends.length > 0 ? ': the server ignores the ones below' : ''}. To give it quests, set its Type to Quest giver under
+			Object and save the object, or use a quest giver object such as a wanted poster.
 		</p>
 	{:else if kind === 'creature' && !ready && (quests.starts.length > 0 || quests.ends.length > 0)}
 		<p class="warn">
@@ -150,9 +118,9 @@
 	{/if}
 
 	<div class="head">
-		<span class="dim">{loading ? 'Loading the quests…' : `Saved to the world database with Save quests, apart from the ${what}.`}</span>
-		<button disabled={!dirty || saving} onclick={() => void load()}>Revert</button>
-		<button class="active" disabled={!dirty || saving} onclick={save}>{saving ? 'Saving…' : dirty ? 'Save quests' : 'Saved'}</button>
+		<span class="dim">{lists.loading ? 'Loading the quests…' : `Saved to the world database with Save quests, apart from the ${what}.`}</span>
+		<button disabled={!lists.dirty || lists.saving} onclick={revert}>Revert</button>
+		<button class="active" disabled={!lists.dirty || lists.saving} onclick={save}>{lists.saving ? 'Saving…' : lists.dirty ? 'Save quests' : 'Saved'}</button>
 	</div>
 
 	{#each [['starts', 'Starts', 'Offers these quests to players.'], ['ends', 'Ends', 'Takes these quests in.']] as [list, title, what] (list)}
@@ -163,7 +131,7 @@
 		{:else}
 			<ul class="list">
 				{#each rows as r, i (r.quest)}
-					<li>
+					<li use:idMenu={{ ids: [idOf('quest', r.quest)], name: r.title }}>
 						<span class="lvl">[{r.level}]</span>
 						<span class="name">{r.title || '(unknown quest)'}</span>
 						<span class="dim">{r.quest}{r.patchMin > 0 || r.patchMax < 10 ? ` · patches ${r.patchMin}–${r.patchMax}` : ''}</span>
@@ -184,7 +152,7 @@
 	{#if results.length}
 		<ul class="list results">
 			{#each results as r (r.quest)}
-				<li>
+				<li use:idMenu={{ ids: [idOf('quest', r.quest)], name: r.title }}>
 					<span class="lvl">[{r.level}]</span>
 					<span class="name">{r.title}</span>
 					<span class="dim">{r.quest}</span>
@@ -249,7 +217,7 @@
 		white-space: nowrap;
 	}
 	.lvl {
-		color: #ffd100;
+		color: var(--warn);
 		min-width: 28px;
 	}
 	.list button {

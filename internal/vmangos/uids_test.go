@@ -10,6 +10,7 @@ import (
 
 	"Meld/internal/adt"
 	"Meld/internal/mpq"
+	"Meld/internal/testclient"
 	"Meld/internal/wow"
 )
 
@@ -21,7 +22,7 @@ import (
 func TestRegionAddedModelsGetMapWideIDs(t *testing.T) {
 	dir := t.TempDir()
 	tile := func(x, y int, objs ...adt.Object) mpq.File {
-		root, err := adt.BuildTile(flatTile(0), adt.Changes{TileX: x, TileY: y, Add: objs})
+		root, err := adt.BuildTile(flatTile(0), adt.Ring{}, adt.Changes{TileX: x, TileY: y, Add: objs})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -86,10 +87,7 @@ func TestRegionAddedModelsGetMapWideIDs(t *testing.T) {
 // only, its compressed sectors unpacked as far as needed) against parsing the whole tile, on a
 // quarter of Azeroth's tiles. It needs WOW_DIR.
 func TestClientTileUIDMax(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -140,10 +138,7 @@ func TestClientTileUIDMax(t *testing.T) {
 // any an earlier compile added, which Meld's patch holds) have IDs of their own, above every placement of
 // the map's other tiles. It needs WOW_DIR.
 func TestClientRegionAddedModelIDs(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -156,10 +151,8 @@ func TestClientRegionAddedModelIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	others, err := mapUIDMax(set, "Azeroth", func(x, y int) bool { return x >= 32 && x < 34 && y >= 48 && y < 50 })
-	if err != nil {
-		t.Fatal(err)
-	}
+	defer set.Close()
+	var others uint32
 	own := map[uint32]bool{}
 	for y := 48; y < 50; y++ {
 		for x := 32; x < 34; x++ {
@@ -177,7 +170,6 @@ func TestClientRegionAddedModelIDs(t *testing.T) {
 			}
 		}
 	}
-	set.Close()
 	rock := `m2:World\Generic\Passive Doodads\Rocks\Rock01.m2`
 	objects := append(view.Objects[:len(view.Objects):len(view.Objects)],
 		ObjectView{Type: rock, X: adt.TileSize - 5, Y: 60, Z: 100, Scale: 1},
@@ -198,10 +190,8 @@ func TestClientRegionAddedModelIDs(t *testing.T) {
 	seen := map[uint32]bool{}
 	addedAt := map[uint32][3]float32{}
 	var added []uint32
-	for _, f := range files {
-		if !strings.EqualFold(filepath.Ext(f.Name), ".adt") {
-			continue
-		}
+	// Only the block's tiles, which come first: a tile outside it (#647) lists its own models too.
+	for _, f := range files[:view.Size*view.Size] {
 		placed, err := adt.ParsePlacements(f.Data)
 		if err != nil {
 			t.Fatalf("%s: %v", f.Name, err)
@@ -221,6 +211,36 @@ func TestClientRegionAddedModelIDs(t *testing.T) {
 			seen[p.UID] = true
 		}
 	}
+	// The tiles outside the block the save rewrote (#647) list copies of the block's models, which must
+	// stand where the block's tiles have them, and their own models, whose IDs the added ones must be
+	// above, as must those of every tile the save leaves alone.
+	outside := map[string]bool{}
+	for _, f := range files[view.Size*view.Size:] {
+		if !strings.EqualFold(filepath.Ext(f.Name), ".adt") {
+			continue
+		}
+		outside[strings.ToLower(f.Name)] = true
+		placed, err := adt.ParsePlacements(f.Data)
+		if err != nil {
+			t.Fatalf("%s: %v", f.Name, err)
+		}
+		for _, p := range placed {
+			if q, ok := addedAt[p.UID]; ok {
+				if q != p.Position {
+					t.Fatalf("%s: model %d shares an added model's ID", f.Name, p.UID)
+				}
+			} else if !before[p.UID] {
+				others = max(others, p.UID)
+			}
+		}
+	}
+	rest, err := mapUIDMax(set, "Azeroth", func(x, y int) bool {
+		return x >= 32 && x < 34 && y >= 48 && y < 50 || outside[strings.ToLower(adt.TilePath("Azeroth", x, y, ""))]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	others = max(others, rest)
 	if len(added) != renumbered+2 {
 		t.Fatalf("added IDs %v, want %d", added, renumbered+2)
 	}

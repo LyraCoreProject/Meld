@@ -134,13 +134,27 @@ type Waypoint struct {
 var runSQL = func(db worldDB, sql string) ([]byte, error) {
 	args := append([]string{"-B", "-N"}, db.args(sql)...)
 	cmd := exec.Command("mariadb", args...)
+	cmd.Env = append(os.Environ(), db.env()...)
 	hideConsole(cmd)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("mariadb: %w: %s", err, strings.TrimSpace(errOut.String()))
+		return nil, fmt.Errorf("mariadb: %w: %s", err, mariadbError(errOut.String()))
 	}
 	return out.Bytes(), nil
+}
+
+// mariadbError is mariadb's error output without its WARNING lines: with the password in MYSQL_PWD,
+// MariaDB 11.4's client warns on every run that it skips the server certificate check of a
+// "passwordless" login, which would otherwise come before every error.
+func mariadbError(stderr string) string {
+	var keep []string
+	for _, line := range strings.Split(stderr, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "WARNING:") {
+			keep = append(keep, line)
+		}
+	}
+	return strings.Join(keep, "\n")
 }
 
 // ReadSpawns returns the creatures and game objects the world database places in the block of
@@ -160,15 +174,14 @@ func ReadSpawns(serverRoot, dataDir, mapName string, x, y, size int) ([]WorldSpa
 	if err := ensureDatabase(db, serverRoot); err != nil {
 		return nil, err
 	}
-	// The server's coordinates are the ADT ones swapped and mirrored: its x is ZeroPoint less the
-	// tile's Z, and its y is ZeroPoint less the tile's X. So the block's server bounds are:
-	t := float64(adt.TileSize)
-	zp := float64(adt.ZeroPoint)
-	xLo, xHi := zp-float64(y+size)*t, zp-float64(y)*t
-	yLo, yHi := zp-float64(x+size)*t, zp-float64(x)*t
+	// The server's axes are the editor's swapped and mirrored (adt.ToServer), so the block's far
+	// corner gives the low bounds and its first corner the high ones.
+	side := float64(size) * adt.TileSize
+	xLo, yLo := adt.ToServer(side, side, x, y)
+	xHi, yHi := adt.ToServer(0, 0, x, y)
 	bounds := fmt.Sprintf("c.map = %d AND c.position_x BETWEEN %f AND %f AND c.position_y BETWEEN %f AND %f",
 		mapID, xLo, xHi, yLo, yHi)
-	gBounds := strings.Replace(bounds, "c.", "g.", -1)
+	gBounds := strings.ReplaceAll(bounds, "c.", "g.")
 
 	creatures := fmt.Sprintf(`SELECT c.guid, c.id, t.name, COALESCE(t.subname, ''), t.level_min, t.level_max, t.faction,
 		t.npc_flags, t.rank, t.type, c.position_x, c.position_y, c.position_z, c.orientation, c.spawntimesecsmin,
@@ -286,10 +299,8 @@ func readWaypoints(db worldDB, spawns []WorldSpawn, x, y int) error {
 // parseWaypoints reads path rows (owner, point, x, y, z, orientation, wait, script, wander) into
 // paths by owner, in the region at tile (x, y), in the order the rows come.
 func parseWaypoints(raw []byte, x, y int) map[int][]Waypoint {
-	t := float64(adt.TileSize)
-	zp := float64(adt.ZeroPoint)
 	out := map[int][]Waypoint{}
-	for _, f := range tsvRows(raw, 9) {
+	for _, f := range batchRows(raw, 9) {
 		owner, err1 := strconv.Atoi(f[0])
 		wait, err2 := strconv.Atoi(f[6])
 		script, err3 := strconv.Atoi(f[7])
@@ -304,9 +315,10 @@ func parseWaypoints(raw []byte, x, y int) map[int][]Waypoint {
 		if !ok {
 			continue
 		}
+		ex, ez := adt.FromServer(v[0], v[1], x, y)
 		out[owner] = append(out[owner], Waypoint{
-			X:              float32(zp - v[1] - float64(x)*t),
-			Z:              float32(zp - v[0] - float64(y)*t),
+			X:              float32(ex),
+			Z:              float32(ez),
 			Y:              float32(v[2]),
 			Orientation:    float32(v[3]),
 			WaitMs:         wait,
@@ -338,7 +350,7 @@ func readEquipment(db worldDB, rows []spawnRow) (map[int][3]heldItem, error) {
 	}
 	items := map[int][3]int{}
 	itemIDs := map[int]bool{}
-	for _, f := range tsvRows(raw, 4) {
+	for _, f := range batchRows(raw, 4) {
 		n, ok := atoiAll(f)
 		if !ok {
 			continue
@@ -360,7 +372,7 @@ func readEquipment(db worldDB, rows []spawnRow) (map[int][3]heldItem, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, f := range tsvRows(raw, 3) {
+		for _, f := range batchRows(raw, 3) {
 			if n, ok := atoiAll(f); ok {
 				held[n[0]] = heldItem{display: uint32(n[1]), invType: n[2]}
 			}
@@ -391,18 +403,6 @@ func intList(ids map[int]bool) string {
 	return strings.Join(parts, ", ")
 }
 
-// tsvRows splits mariadb's batch output into rows of n fields, skipping rows of another width.
-func tsvRows(raw []byte, n int) [][]string {
-	var out [][]string
-	// Only line ends are trimmed: an empty last column leaves a trailing tab that is a field.
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\r\n"), "\n") {
-		if f := strings.Split(strings.TrimRight(line, "\r"), "\t"); len(f) == n {
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
 // atoiAll reads every field as an integer.
 func atoiAll(f []string) ([]int, bool) {
 	out := make([]int, len(f))
@@ -420,11 +420,10 @@ func atoiAll(f []string) ([]int, bool) {
 // the tile's X less the block's, editor z the tile's Z less the block's, and the height is the same.
 // A creature is dressed in its display's look with weapons in its hands.
 func regionSpawn(s spawnRow, x, y int, tables *modelTables, weapons [3]heldItem) WorldSpawn {
-	t := float64(adt.TileSize)
-	zp := float64(adt.ZeroPoint)
 	out := s.WorldSpawn
-	out.X = float32(zp - float64(s.sy) - float64(x)*t)
-	out.Z = float32(zp - float64(s.sx) - float64(y)*t)
+	ex, ez := adt.FromServer(float64(s.sx), float64(s.sy), x, y)
+	out.X = float32(ex)
+	out.Z = float32(ez)
 	out.Y = s.height
 	out.Scale = s.scale
 	if out.Scale <= 0 {
@@ -472,14 +471,12 @@ const spawnColumns = 29
 // most respawn seconds, and last for an object (zeros for a creature) its rotation quaternion.
 func parseSpawnRows(raw []byte, kind string) ([]spawnRow, error) {
 	var out []spawnRow
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-		line = strings.TrimRight(line, "\r")
-		if line == "" {
+	for _, f := range batchLines(raw) {
+		if len(f) == 1 && f[0] == "" {
 			continue
 		}
-		f := strings.Split(line, "\t")
 		if len(f) != spawnColumns {
-			return nil, fmt.Errorf("spawn row has %d columns, want %d: %q", len(f), spawnColumns, line)
+			return nil, fmt.Errorf("spawn row has %d columns, want %d: %q", len(f), spawnColumns, strings.Join(f, "\t"))
 		}
 		var r spawnRow
 		var display, addonDisplay int

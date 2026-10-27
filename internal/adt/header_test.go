@@ -4,8 +4,9 @@ import "testing"
 
 func TestRewriteChunkHeadersReadBack(t *testing.T) {
 	root := newTileRoot(32, 48)
+	yes, no := true, false
 	out, err := Rewrite(root, Changes{TileX: 32, TileY: 48, Headers: map[int]ChunkHeader{
-		5: {AreaID: 12, Impassable: true},
+		5: {AreaID: 12, Impassable: &yes},
 		6: {AreaID: 40},
 	}})
 	if err != nil {
@@ -35,7 +36,7 @@ func TestRewriteChunkHeadersReadBack(t *testing.T) {
 	// The no-effect bits are replaced, not added to, even over what a paint adds.
 	alpha := make([]byte, 64*64)
 	paint := map[int]ChunkPaint{5: {Layers: []Layer{{Texture: `Tileset\Elwynn\ElwynnGrassBase.blp`}, {Texture: `Tileset\Elwynn\ElwynnDirtBase.blp`, Alpha: alpha}}, NoEffect: []uint8{0xff, 0, 0, 0, 0, 0, 0, 0}}}
-	bits, err := Rewrite(out, Changes{TileX: 32, TileY: 48, Paint: paint, Headers: map[int]ChunkHeader{5: {AreaID: 12, Impassable: true, NoEffect: []uint8{1, 0, 0, 0, 0, 0, 0, 2}}}})
+	bits, err := Rewrite(out, Changes{TileX: 32, TileY: 48, Paint: paint, Headers: map[int]ChunkHeader{5: {AreaID: 12, Impassable: &yes, NoEffect: []uint8{1, 0, 0, 0, 0, 0, 0, 2}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,8 +48,21 @@ func TestRewriteChunkHeadersReadBack(t *testing.T) {
 		t.Fatalf("no-effect rows %v", got)
 	}
 
-	// Area 0 keeps the chunk's own zone, and a cleared flag comes off.
-	out2, err := Rewrite(out, Changes{TileX: 32, TileY: 48, Headers: map[int]ChunkHeader{5: {}}})
+	// Area 0 and no impassable value keep the chunk's own zone and flag (a map without chunk data, #644).
+	kept, err := Rewrite(out, Changes{TileX: 32, TileY: 48, Headers: map[int]ChunkHeader{5: {}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terrain, err = ParseTerrain(kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := terrain.Chunks[5]; c.AreaID != 12 || !c.Impassable() {
+		t.Fatalf("after keeping: area %d, impassable %v", c.AreaID, c.Impassable())
+	}
+
+	// A cleared flag comes off.
+	out2, err := Rewrite(out, Changes{TileX: 32, TileY: 48, Headers: map[int]ChunkHeader{5: {Impassable: &no}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +109,27 @@ func TestRewriteHolesReadBack(t *testing.T) {
 	}
 	if terrain.Chunks[8].Holes != [CellsPerChunk]uint8{} {
 		t.Fatal("another chunk got holes")
+	}
+
+	// Added, as a map that doesn't know the client's holes sends them (#663), they join the chunk's
+	// own; replaced, the chunk's own go.
+	more := HoleBits([]uint8{0x03, 0, 0, 0, 0, 0, 0, 0})
+	for _, add := range []bool{true, false} {
+		again, err := Rewrite(out, Changes{TileX: 32, TileY: 48, Headers: map[int]ChunkHeader{9: {Holes: &more, HolesAdd: add}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		terrain, err := ParseTerrain(again)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := [CellsPerChunk]uint8{0x03, 0x03, 0, 0, 0, 0, 0, 0}
+		if add {
+			want = [CellsPerChunk]uint8{0x03, 0x03, 0x0c, 0x0c, 0, 0, 0, 0}
+		}
+		if terrain.Chunks[9].Holes != want {
+			t.Fatalf("add %v: holes %v, want %v", add, terrain.Chunks[9].Holes, want)
+		}
 	}
 }
 

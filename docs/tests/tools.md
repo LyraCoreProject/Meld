@@ -79,6 +79,49 @@ input must leave the history alone. A Shift move is `onDown(..., { shiftKey: tru
   each kind of control focused and after each editor opened and closed, and checks a text field and a
   slider keep their own keys. A control now keeps only the keys it uses (`controlKeepsKey` in `App.svelte`).
 
+## Every tool's stroke is one undo step (#438, `tests/toolUndo.test.ts`)
+
+Checks: the hard rule that every edit is undoable, and that a stroke is one step, for each tool and
+mode without the app: `cd frontend && bun test tests/toolUndo.test.ts`. Each row drives a tool as the
+Engine does (`onDown`, then `onMove` and `tick` each frame, `onUp`) on a real 64-cell `Terrain` with
+paint, a hole block, a pond and three cubes in a real `ObjectLayer`, then asserts that the map changed,
+that the History holds exactly one new step, that Undo gives back every array (heights, holes, paint,
+mask, chunk data, shadows, liquids, objects, paths) and that Redo gives back the stroke's result.
+
+- A new tool or mode gets a row in `rows`: its settings in `setup` (the editor and prefs are reset to
+  their defaults before each row), and a `from`/`to`/`ticks` or an `act` when it is a click or a key.
+  "The stroke changed the map" failing means the row's settings or the map don't give the tool
+  anything to do (Erode thermal needed a lower talus than the map's slopes).
+- The Select tool (#694) is built by `selectTool(w)`, its paste hooks doing what `Engine.commitPaste`
+  does with the clip a row puts in `paste`. Its rows drag a model, three models, a creature and a path
+  point, add a path point, paste models and an area, and drag a hole wall or click its + and − badge.
+  The stroke draws the models first (`draw`: `ObjectLayer.update` and `cull`, as the Engine's frame
+  does), since a pick finds only drawn instances, and points the pick ray straight down at each hit;
+  the pointer's `clientX` moves 8 px a frame, past the tool's 4 px drag threshold. A spawn's pick needs
+  its drawn model, so the creature row stands `pickHit` in on the layer. The hole wall rows hover the
+  wall through `frame` with a camera's ray (`look`), as a sprite badge's raycast needs one.
+- The spawn brush rows run the Doodad tool in Creatures mode with a `SpawnBrushTool` whose
+  `newCreature` hook hands out guids; the snapshot holds the `SpawnLayer`'s spawns.
+- A selection is no edit: the `selections` tests (a rectangle, a lasso, the selection brush, a click
+  on a model) check that it selects with no History step and the map unchanged.
+- Adding to and taking from an area (#712): `tests/toolUndo.test.ts`, "Shift adds to the area and Ctrl
+  takes from it", drags a rect, a Shift rect beside it (one plain rect, all three cubes) and a Ctrl rect
+  inside (a hole, its cube dropped), then Shift and plain clicks; `combineArea` itself is in
+  `tests/areaShape.test.ts`. By hand in the dev page: the Shift or Ctrl rect is drawn as a yellow outline
+  over the area while dragged, the area itself staying on show.
+- The gizmo's handles are `engine/GizmoDrag.ts` (#555), so they are `tests/gizmoDrag.test.ts`
+  (`bun test tests/gizmoDrag.test.ts`, well under a second): on a flat map through a fake `GizmoHost`
+  with a real `TransformGizmo` and camera, one model's ring, arrow, knob and move arrow, a group's
+  ring, arrow and knob, and a selected spawn's ring and arrow, each one step that Undo and Redo
+  restore, with the snap and angle maths. The test puts the handles itself (`place`), as
+  `Engine.updateSelectionVisuals` would, so a spawn needs no drawn model there. The probe `gizmo-undo`
+  (`bun run probe gizmo-undo`, about 7 s) runs the model, group and spawn drags through the Engine in the
+  live app; the spawn is a creature of the world database (so it needs the database), its cone standing in
+  for a model not yet loaded, which is enough for `SpawnLayer.boundsOf` to show the gizmo.
+- Trap: the hole walls draw on a canvas when made, so the test's `ctx.holeWalls` is made on first use
+  inside `withCanvas`, which stands a `document` in and takes it away again (`uiScale.test.ts` checks the
+  code without one).
+
 ## Gizmo drags (spin ring, height arrow, scale knob) without a mouse
 
 Checks: the selected prop's gizmo (`TransformGizmo`), its sweep arc and the viewport badge, in the
@@ -130,6 +173,35 @@ preview's next placement, the selection's `tiltX`/`tiltZ`, one undo step for a b
 scrolling back to 0 hands the tilt back to Random tilt. `tests/placement.test.ts` pins `stepTilt`.
 - Trap: the key is tracked by `e.code === 'KeyZ'`, so a synthetic keydown needs `code: 'KeyZ'`, and a
   keyup (or a window blur) to release it, or later wheel events keep tilting.
+
+## Undoing a placement with the cursor over it (#719, probe `place-undo`)
+
+Checks: with the Place tool and Fit ground on, a click on bumpy ground places a helper cube with the
+ground fitted under it as one step (`Place and fit ground`), and Ctrl+Z takes both away with the next
+frames running: no throw, no model left, every height back, and the undo with its first frame under
+100 ms of script. Probe `place-undo` (`bun run probe place-undo`).
+- Trap: a removed object stays in its instance batch, with its id in the mesh's `userData.ids`, until
+  `ObjectLayer.update` repacks it, and the tool's `frame` (the Place preview's surface raycast) runs
+  before that update in `Engine.simulate`. A pick that looks the hit id up with `objects.get(id)!`
+  threw there every frame, so `update` never ran and the view froze until the cursor left the
+  model's footprint (the owner's 500 to 1000 ms "lag" on a large building). Skip ids that are no
+  longer in `objects`.
+- Measure the script time with `e.undo(); e.frame()` between `performance.now()` calls: `P.frames`
+  waits for SwiftShader to draw, 200 to 350 ms a frame on the dev page, which hides the script cost.
+
+## Placing a creature or game object: the preview's size (#672)
+
+Checks: with a template from the browser's Creatures, NPCs or Objects tab, the Place tool's preview is
+drawn at the size the spawn takes (`placingSpawnScale` in `ObjectTools.ts`: the template's scale times
+its display's, an object's `size`), not at 1, Shift+scroll leaves it be, and the clicked spawn's
+`scale` matches. Probe `place-spawn-size` (`bun run probe place-spawn-size`) picks the first object
+and creature templates sized away from 1 on the benchmark scene; needs the world database. The spawn
+brush's ghosts take the same size through its `ghostScale` hook.
+- The clicked spawn also faces the preview's rotation (`tool.rot`, turned by R, Ctrl+scroll or Random
+  rotation; #673): the probe sets `tool.rot` and compares the spawn's `orientation` with
+  `spawnOrientation(rot)`. The Select tool's template click still faces the camera.
+- Trap: a template made in the creature editor (`creatureTemplateOf`) has `displayScale` 1 until its
+  look is read, so its preview misses the display's own scale; the browser's templates carry it.
 
 ## Placement tilt (the client's rotation order, #149)
 
@@ -331,8 +403,8 @@ takes the first apply back (the hump goes), with both applies undoing in order.
 `bun run probe path-road` on a fresh flat map; `--shot <dir>` saves `path-road-applied.png`, the road
 seen from above with its dots and width lines.
 - `frontend/tests/paths.test.ts` covers the curve sampling, the grade limit, the cross profile, the
-  distance field, reading paths from a file and `applyRoad`'s heights and paint with their undo, on a
-  plain object standing in for `Terrain`.
+  distance field, reading paths from a file and a road's heights and paint through `applyPath`
+  (`tools/pathApply.ts`) with their undo, on a plain object standing in for `Terrain`.
 - The probe aims the clicks by projecting world points through `e.camera` (`Vector3.project`), and
   passes `movementY` in the drag's event options, which a synthetic `PointerEvent` otherwise leaves 0.
 

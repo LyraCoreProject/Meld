@@ -72,9 +72,9 @@ func countRule(id, count, what string) questRule {
 	return questRule{[]string{id, count}, func(v func(string) int64) error {
 		switch {
 		case v(id) != 0 && v(count) <= 0:
-			return fmt.Errorf("%s names %s %d but %s is %d: give it a count", id, what, v(id), count, v(count))
+			return refuse(id, "%s names %s %d but %s is %d: give it a count", id, what, v(id), count, v(count))
 		case v(id) == 0 && v(count) != 0:
-			return fmt.Errorf("%s is %d but %s names no %s", count, v(count), id, what)
+			return refuse(count, "%s is %d but %s names no %s", count, v(count), id, what)
 		}
 		return nil
 	}}
@@ -86,9 +86,9 @@ func repValueRule(faction, value string, needValue bool) questRule {
 	return questRule{[]string{faction, value}, func(v func(string) int64) error {
 		switch {
 		case v(faction) == 0 && v(value) != 0:
-			return fmt.Errorf("%s is %d but %s names no faction", value, v(value), faction)
+			return refuse(value, "%s is %d but %s names no faction", value, v(value), faction)
 		case needValue && v(faction) != 0 && v(value) == 0:
-			return fmt.Errorf("%s names faction %d but %s is 0: give it an amount", faction, v(faction), value)
+			return refuse(faction, "%s names faction %d but %s is 0: give it an amount", faction, v(faction), value)
 		}
 		return nil
 	}}
@@ -108,41 +108,41 @@ var questRules = func() []questRule {
 	rules := []questRule{
 		{[]string{"Method"}, func(v func(string) int64) error {
 			if m := v("Method"); m > 2 {
-				return fmt.Errorf("Method is %d: it must be 0 (completes itself), 1 (disabled) or 2 (normal)", m)
+				return refuse("Method", "Method is %d: it must be 0 (completes itself), 1 (disabled) or 2 (normal)", m)
 			}
 			return nil
 		}},
 		{[]string{"SpecialFlags"}, func(v func(string) int64) error {
 			if f := v("SpecialFlags"); f&^questSpecialFlagsDB != 0 {
-				return fmt.Errorf("SpecialFlags is %d: the database may only set 1 (repeatable) and 2 (exploration or event)", f)
+				return refuse("SpecialFlags", "SpecialFlags is %d: the database may only set 1 (repeatable) and 2 (exploration or event)", f)
 			}
 			return nil
 		}},
 		{[]string{"RequiredClasses"}, func(v func(string) int64) error {
 			if c := v("RequiredClasses"); c != 0 && c&classMaskPlayable == 0 {
-				return fmt.Errorf("RequiredClasses is %d, which has no playable class: the server would allow every class", c)
+				return refuse("RequiredClasses", "RequiredClasses is %d, which has no playable class: the server would allow every class", c)
 			}
 			return nil
 		}},
 		{[]string{"RequiredRaces"}, func(v func(string) int64) error {
 			if r := v("RequiredRaces"); r != 0 && r&raceMaskPlayable == 0 {
-				return fmt.Errorf("RequiredRaces is %d, which has no playable race: the server would allow every race", r)
+				return refuse("RequiredRaces", "RequiredRaces is %d, which has no playable race: the server would allow every race", r)
 			}
 			return nil
 		}},
 		{[]string{"MinLevel", "MaxLevel"}, func(v func(string) int64) error {
 			if hi := v("MaxLevel"); hi != 0 && hi < v("MinLevel") {
-				return fmt.Errorf("MaxLevel %d is below MinLevel %d: no one could take the quest", hi, v("MinLevel"))
+				return refuse("MaxLevel", "MaxLevel %d is below MinLevel %d: no one could take the quest", hi, v("MinLevel"))
 			}
 			return nil
 		}},
 		{[]string{"RequiredMinRepValue", "RequiredMaxRepValue"}, func(v func(string) int64) error {
 			lo, hi := v("RequiredMinRepValue"), v("RequiredMaxRepValue")
 			if lo > reputationCap {
-				return fmt.Errorf("RequiredMinRepValue is %d, more than the most reputation a player can have (%d)", lo, reputationCap)
+				return refuse("RequiredMinRepValue", "RequiredMinRepValue is %d, more than the most reputation a player can have (%d)", lo, reputationCap)
 			}
 			if lo != 0 && hi != 0 && hi <= lo {
-				return fmt.Errorf("RequiredMaxRepValue %d is not above RequiredMinRepValue %d: no one could take the quest", hi, lo)
+				return refuse("RequiredMaxRepValue", "RequiredMaxRepValue %d is not above RequiredMinRepValue %d: no one could take the quest", hi, lo)
 			}
 			return nil
 		}},
@@ -154,7 +154,7 @@ var questRules = func() []questRule {
 				case v(c) == 0 && gap == "":
 					gap = c
 				case v(c) != 0 && gap != "":
-					return fmt.Errorf("%s is empty but %s isn't: the choices must have no gap (the 1.12.1 client crashes on one)", gap, c)
+					return refuse(gap, "%s is empty but %s isn't: the choices must have no gap (the 1.12.1 client crashes on one)", gap, c)
 				}
 			}
 			return nil
@@ -223,7 +223,7 @@ func checkQuest(row, changed map[string]string, known questKnown) error {
 	}
 	var problems []error
 	if _, ok := changed["Title"]; ok && strings.TrimSpace(row["Title"]) == "" {
-		problems = append(problems, errors.New("the quest needs a title"))
+		problems = append(problems, refuse("Title", "the quest needs a title"))
 	}
 	for _, r := range questRules {
 		for _, c := range r.cols {
@@ -271,7 +271,7 @@ func checkQuest(row, changed map[string]string, known questKnown) error {
 		}
 		for _, u := range uses[kind] {
 			if !have[u.id] {
-				problems = append(problems, fmt.Errorf("%s names %s %d, which %s", u.col, kind, u.id, missingWhere(kind)))
+				problems = append(problems, refuse(u.col, "%s names %s %d, which %s", u.col, kind, u.id, missingWhere(kind)))
 			}
 		}
 	}
@@ -464,12 +464,8 @@ func questGiversSQL(table, kind string, quest int) string {
 // parseQuestGivers reads questGiversSQL's rows.
 func parseQuestGivers(raw []byte, kind string) []QuestGiver {
 	var out []QuestGiver
-	for _, f := range tsvRows(raw, 6) {
-		n := func(i int) int {
-			v, _ := strconv.Atoi(f[i])
-			return v
-		}
-		out = append(out, QuestGiver{Kind: kind, ID: n(0), Name: unescapeBatch(f[1]), PatchMin: n(2), PatchMax: n(3), Ready: f[4] == "1", Spawns: n(5)})
+	for _, f := range batchRows(raw, 6) {
+		out = append(out, QuestGiver{Kind: kind, ID: f.num(0), Name: f[1], PatchMin: f.num(2), PatchMax: f.num(3), Ready: f[4] == "1", Spawns: f.num(5)})
 	}
 	return out
 }
@@ -668,12 +664,8 @@ func TemplateNames(serverRoot, kind string, ids []int) (map[int]NamedRef, error)
 	if err != nil {
 		return nil, err
 	}
-	for _, f := range tsvRows(raw, 5) {
-		n := func(i int) int {
-			v, _ := strconv.Atoi(f[i])
-			return v
-		}
-		out[n(0)] = NamedRef{Name: unescapeBatch(f[1]), Quality: n(2), DisplayID: n(3), Level: n(4)}
+	for _, f := range batchRows(raw, 5) {
+		out[f.num(0)] = NamedRef{Name: f[1], Quality: f.num(2), DisplayID: f.num(3), Level: f.num(4)}
 	}
 	return out, nil
 }
@@ -691,6 +683,9 @@ type QuestTables struct {
 	Sorts    []NamedID `json:"sorts"`
 	Skills   []NamedID `json:"skills"`
 	Factions []NamedID `json:"factions"`
+	// MailTemplates are MailTemplate.dbc's letters (#704), by their body's first line (1.12's
+	// table has no subject).
+	MailTemplates []NamedID `json:"mailTemplates"`
 }
 
 // questDBC is what the quest editor reads from the client's QuestSort, SkillLine and Faction
@@ -732,7 +727,8 @@ func readNamed(b []byte, nameField int, keep func(t *dbcTable, r int) bool) ([]N
 }
 
 // loadQuestDBC reads the quest editor's client tables (1.12 layouts: QuestSort's name is field 1,
-// SkillLine's field 3, Faction's field 19 with its reputation index, -1 for none, in field 1).
+// SkillLine's field 3, Faction's field 19 with its reputation index, -1 for none, in field 1,
+// MailTemplate's body field 1, named by its first line).
 func loadQuestDBC(dataDir string) (*questDBC, error) {
 	questDBCs.Lock()
 	defer questDBCs.Unlock()
@@ -754,6 +750,7 @@ func loadQuestDBC(dataDir string) (*questDBC, error) {
 		{"sort", "QuestSort", 1, &d.tables.Sorts, nil},
 		{"skill", "SkillLine", 3, &d.tables.Skills, nil},
 		{"faction", "Faction", 19, &d.tables.Factions, func(t *dbcTable, r int) bool { return int32(t.u32(r, 1)) >= 0 }},
+		{"mail template", "MailTemplate", 1, &d.tables.MailTemplates, nil},
 	} {
 		b, err := set.ReadFile(`DBFilesClient\` + t.file + `.dbc`)
 		if err != nil {
@@ -763,10 +760,25 @@ func loadQuestDBC(dataDir string) (*questDBC, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s.dbc: %w", t.file, err)
 		}
+		if t.kind == "mail template" {
+			list, names = firstLines(list, names)
+		}
 		*t.list, d.names[t.kind] = list, names
 	}
 	questDBCs.by[dataDir] = d
 	return d, nil
+}
+
+// firstLines names a table's rows of long text (a letter's body) by their first line, as a picker
+// shows them.
+func firstLines(list []NamedID, names map[int]string) ([]NamedID, map[int]string) {
+	for i := range list {
+		list[i].Name = firstLine(list[i].Name)
+	}
+	for id, n := range names {
+		names[id] = firstLine(n)
+	}
+	return list, names
 }
 
 // LoadQuestTables reads the client's quest sorts, skills and reputation factions.
@@ -905,13 +917,13 @@ func PlanQuestDelete(serverRoot string, entry int) (QuestDeletePlan, error) {
 	if err != nil {
 		return plan, err
 	}
-	for _, f := range tsvRows(raw, 3) {
+	for _, f := range batchRows(raw, 3) {
 		q, _ := strconv.Atoi(f[0])
 		if n := len(plan.Links); n > 0 && plan.Links[n-1].Quest == q {
 			plan.Links[n-1].Columns = append(plan.Links[n-1].Columns, f[1])
 			continue
 		}
-		plan.Links = append(plan.Links, QuestLink{Quest: q, Title: unescapeBatch(f[2]), Columns: []string{f[1]}})
+		plan.Links = append(plan.Links, QuestLink{Quest: q, Title: f[2], Columns: []string{f[1]}})
 	}
 	if cdb, err := confDatabase(serverRoot, "CharacterDatabase.Info"); err == nil {
 		if raw, err := runSQL(cdb, fmt.Sprintf("SELECT COUNT(DISTINCT guid) FROM character_queststatus WHERE quest = %d", entry)); err == nil {

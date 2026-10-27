@@ -136,8 +136,9 @@ const SculptedEps = 1e-3
 // as TileView has them). Shared edge samples are written into both chunks that hold them. A cell
 // whose corners all keep the client's heights keeps its inner sample (the client's detail at the
 // cell's middle); a sculpted one, any corner moved by more than SculptedEps, has it at the corners'
-// mean, as the editor shows the cell (#380).
-func PatchTileHeights(root []byte, outer []float32) ([]byte, error) {
+// mean, as the editor shows the cell (#380). edges is the neighbouring tiles' heights just across the
+// border, as they will be and as the tile's normals were made against (adt.Edges, #492), or nil.
+func PatchTileHeights(root []byte, outer []float32, edges *adt.Edges) ([]byte, error) {
 	if len(outer) != LatticeSize*LatticeSize {
 		return nil, fmt.Errorf("vmangos: %d heights for a tile, want %d", len(outer), LatticeSize*LatticeSize)
 	}
@@ -145,6 +146,14 @@ func PatchTileHeights(root []byte, outer []float32) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	patchHeights(terrain, outer)
+	return adt.WriteHeights(root, terrain, edges)
+}
+
+// patchHeights puts outer into terrain's chunks as PatchTileHeights writes them, with each cell's inner
+// sample kept or set to its corners' mean. blockEdges runs it on a neighbour in the block too, for the
+// inner samples across a tile's border, so both tiles see the same heights to the bit.
+func patchHeights(terrain *adt.Terrain, outer []float32) {
 	for i := range terrain.Chunks {
 		c := &terrain.Chunks[i]
 		// The change at each outer sample. The inner samples sit between four outer ones: an
@@ -171,7 +180,6 @@ func PatchTileHeights(root []byte, outer []float32) ([]byte, error) {
 			}
 		}
 	}
-	return adt.WriteHeights(root, terrain)
 }
 
 // sculpted says a corner's change d moves it off the client's height (#380).

@@ -1,4 +1,5 @@
 // Undoing and redoing a Spawn brush stroke of 60 creatures on Elwynn's 1398 spawns redraws the spawn layer once, not once a creature (#193); needs the world database.
+// touches: frontend/src/lib/tools/SpawnBrushTool.ts, frontend/src/lib/world/spawnEdits.ts, frontend/src/lib/world/SpawnLayer.ts, frontend/src/lib/engine/SpawnActions.ts
 const e = P.e
 const se = await P.app('/src/lib/world/spawnEdits.ts')
 const App = window.go.main.App
@@ -17,7 +18,10 @@ for (let i = 0; i < 60; i++) cmds.push(se.spawnAdd(layer, se.newCreatureSpawn(t,
 // The same two closures the Spawn brush pushes (SpawnBrushTool.onUp).
 e.history.push({
 	label: 'brush',
-	undo: () => se.spawnsBatch(layer, () => { for (let i = cmds.length - 1; i >= 0; i--) cmds[i].undo() }),
+	undo: () =>
+		se.spawnsBatch(layer, () => {
+			for (let i = cmds.length - 1; i >= 0; i--) cmds[i].undo()
+		}),
 	redo: () => se.spawnsBatch(layer, () => cmds.forEach((c) => c.redo())),
 })
 await P.frames(2)

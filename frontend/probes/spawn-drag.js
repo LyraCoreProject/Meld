@@ -1,4 +1,5 @@
 // Moving a spawn a frame at a time (a drag, an arrow-key nudge) leaves the layer's version alone, so the name labels, the particles and the paths are not rebuilt for it (#514); needs the world database.
+// touches: frontend/src/lib/world/SpawnLayer.ts, frontend/src/lib/world/spawnEdits.ts, frontend/src/lib/world/SpawnLabels.ts
 const e = P.e
 const se = await P.app('/src/lib/world/spawnEdits.ts')
 const App = window.go.main.App
@@ -8,6 +9,8 @@ const loaded = await App.LoadSpawns('Azeroth', 30, 48, 1)
 const layer = e.activeDocument().spawnLayer
 layer.set(loaded)
 se.syncSpawnUi(layer, true)
+// Look and label work resolves after set and bumps the version (#731): wait for it to go quiet before taking the baseline.
+await P.settle()
 await P.frames(3)
 const s = layer.spawns.find((x) => x.kind === 'monster')
 const v0 = layer.version

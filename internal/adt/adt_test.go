@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"Meld/internal/mpq"
+	"Meld/internal/testclient"
 )
 
 // resolveDataDir is the client's Data folder, or dir itself when it has none. Not wow.ResolveDataDir,
@@ -132,70 +133,59 @@ func TestParsePlacementsSynthetic(t *testing.T) {
 	}
 }
 
-// TestTileIntegration reads a real Azeroth tile from the client: WOW_DIR=/path/to/client go test ./internal/adt/
+// TestTileIntegration reads a whole tile: the synthetic one, and a real Azeroth tile from the client
+// (WOW_DIR=/path/to/client go test ./internal/adt/, else it skips).
 func TestTileIntegration(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("set WOW_DIR to a WoW 1.12 client to run")
-	}
-	dataDir, err := resolveDataDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	set, err := mpq.OpenDataDir(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer set.Close()
-
-	const x, y = 32, 48
-	root, err := set.ReadFile(TilePath("Azeroth", x, y, ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	wdt, err := set.ReadFile(`World\Maps\Azeroth\Azeroth.wdt`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	terrain, err := ParseTerrain(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(terrain.Chunks) != ChunkCount {
-		t.Fatalf("%d chunks, want %d", len(terrain.Chunks), ChunkCount)
-	}
-	// 1.12 keeps a tile's textures and placements in its root file.
-	textures, err := ParseTextures(root, ReadBigAlpha(wdt), terrain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(textures.Chunks) != len(terrain.Chunks) {
-		t.Fatalf("%d texture chunks for %d terrain chunks", len(textures.Chunks), len(terrain.Chunks))
-	}
-	layers := 0
-	for _, c := range textures.Chunks {
-		layers += len(c.Layers)
-	}
-	if layers == 0 {
-		t.Error("no texture layers")
-	}
-	for _, c := range terrain.Chunks {
-		for _, h := range c.Heights {
-			if h < -5000 || h > 5000 || math.IsNaN(float64(h)) {
-				t.Fatalf("chunk %d,%d has implausible height %v", c.IndexX, c.IndexY, h)
+	eachTile(t, func(t *testing.T, root []byte) {
+		// 1.12 keeps a tile's textures and placements in its root file. The client's Azeroth and the
+		// synthetic tile both use 4-bit alpha (ReadBigAlpha of Azeroth.wdt is false).
+		terrain, err := ParseTerrain(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(terrain.Chunks) != ChunkCount {
+			t.Fatalf("%d chunks, want %d", len(terrain.Chunks), ChunkCount)
+		}
+		textures, err := ParseTextures(root, false, terrain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(textures.Chunks) != len(terrain.Chunks) {
+			t.Fatalf("%d texture chunks for %d terrain chunks", len(textures.Chunks), len(terrain.Chunks))
+		}
+		layers := 0
+		for _, c := range textures.Chunks {
+			layers += len(c.Layers)
+		}
+		if layers == 0 {
+			t.Error("no texture layers")
+		}
+		for _, c := range terrain.Chunks {
+			for _, h := range c.Heights {
+				if h < -5000 || h > 5000 || math.IsNaN(float64(h)) {
+					t.Fatalf("chunk %d,%d has implausible height %v", c.IndexX, c.IndexY, h)
+				}
 			}
 		}
-	}
-	placements, err := ParsePlacements(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("%d chunks, %d texture layers, %d placements", len(terrain.Chunks), layers, len(placements))
-	for _, p := range placements {
-		if p.Name == "" {
-			t.Fatalf("placement %d has no name", p.UID)
+		placements, err := ParsePlacements(root)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
+		t.Logf("%d chunks, %d texture layers, %d placements", len(terrain.Chunks), layers, len(placements))
+		if len(placements) == 0 {
+			t.Error("no placements")
+		}
+		for _, p := range placements {
+			if p.Name == "" {
+				t.Fatalf("placement %d has no name", p.UID)
+			}
+		}
+	})
+	t.Run("client wdt", func(t *testing.T) {
+		if ReadBigAlpha(clientFile(t, `World\Maps\Azeroth\Azeroth.wdt`)) {
+			t.Fatal("Azeroth.wdt says big alpha; the tile tests read its tiles as 4-bit")
+		}
+	})
 }
 
 func TestWriteHeightsSynthetic(t *testing.T) {
@@ -205,7 +195,7 @@ func TestWriteHeightsSynthetic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	same, err := WriteHeights(root, terrain)
+	same, err := WriteHeights(root, terrain, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +204,7 @@ func TestWriteHeightsSynthetic(t *testing.T) {
 	}
 
 	terrain.Chunks[0].Heights[5] += 2.5
-	out, err := WriteHeights(root, terrain)
+	out, err := WriteHeights(root, terrain, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,61 +223,46 @@ func TestWriteHeightsSynthetic(t *testing.T) {
 	}
 }
 
-// TestWriteHeightsIntegration edits one sample of a real tile and reads it back:
-// WOW_DIR=/path/to/client go test ./internal/adt/
+// TestWriteHeightsIntegration edits one sample of a whole tile and reads it back, on the synthetic
+// tile and on the client's (WOW_DIR=/path/to/client go test ./internal/adt/, else it skips).
 func TestWriteHeightsIntegration(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("set WOW_DIR to a WoW 1.12 client to run")
-	}
-	dataDir, err := resolveDataDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	set, err := mpq.OpenDataDir(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer set.Close()
-	root, err := set.ReadFile(TilePath("Azeroth", 32, 48, ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	terrain, err := ParseTerrain(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	same, err := WriteHeights(root, terrain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytesEqual(same, root) {
-		t.Fatal("writing an unedited tile changed it")
-	}
+	eachTile(t, func(t *testing.T, root []byte) {
+		terrain, err := ParseTerrain(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		same, err := WriteHeights(root, terrain, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytesEqual(same, root) {
+			t.Fatal("writing an unedited tile changed it")
+		}
 
-	c := &terrain.Chunks[100]
-	before := c.Heights[40]
-	c.Heights[40] = before + 4
-	out, err := WriteHeights(root, terrain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out) != len(root) {
-		t.Fatalf("file size changed: %d -> %d", len(root), len(out))
-	}
-	back, err := ParseTerrain(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range back.Chunks {
-		for s := 0; s < HeightCount; s++ {
-			want := terrain.Chunks[i].Heights[s]
-			if d := back.Chunks[i].Heights[s] - want; d > 0.01 || d < -0.01 {
-				t.Fatalf("chunk %d sample %d reads back %v, want %v", i, s, back.Chunks[i].Heights[s], want)
+		c := &terrain.Chunks[100]
+		before := c.Heights[40]
+		c.Heights[40] = before + 4
+		out, err := WriteHeights(root, terrain, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != len(root) {
+			t.Fatalf("file size changed: %d -> %d", len(root), len(out))
+		}
+		back, err := ParseTerrain(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range back.Chunks {
+			for s := 0; s < HeightCount; s++ {
+				want := terrain.Chunks[i].Heights[s]
+				if d := back.Chunks[i].Heights[s] - want; d > 0.01 || d < -0.01 {
+					t.Fatalf("chunk %d sample %d reads back %v, want %v", i, s, back.Chunks[i].Heights[s], want)
+				}
 			}
 		}
-	}
-	t.Logf("sample moved from %.3f to %.3f", before, back.Chunks[100].Heights[40])
+		t.Logf("sample moved from %.3f to %.3f", before, back.Chunks[100].Heights[40])
+	})
 }
 
 func bytesEqual(a, b []byte) bool {
@@ -302,69 +277,154 @@ func bytesEqual(a, b []byte) bool {
 	return true
 }
 
-// TestNormalsMatchFile recomputes a real chunk's normals from its heights and compares them with
-// the ones the file stores: WOW_DIR=/path/to/client go test ./internal/adt/
+// TestNormalsMatchFile recomputes real tiles' normals from their heights and compares them with the
+// ones the files store: inside Azeroth_32_48 and Azeroth_31_49, on steep ground and gentle, where they
+// must match the file's to a byte (#668), and along the border of Azeroth_30_40, whose border samples
+// read the neighbouring tiles' heights through the ring (#492):
+// WOW_DIR=/path/to/client go test ./internal/adt/
 func TestNormalsMatchFile(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("set WOW_DIR to a WoW 1.12 client to run")
-	}
-	dataDir, err := resolveDataDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	set, err := mpq.OpenDataDir(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer set.Close()
-	root, err := set.ReadFile(TilePath("Azeroth", 32, 48, ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	terrain, err := ParseTerrain(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	grid := make([]float32, lattice*lattice)
-	for _, c := range terrain.Chunks {
-		for r := 0; r < CellsPerChunk+1; r++ {
-			for col := 0; col < CellsPerChunk+1; col++ {
-				grid[(c.IndexY*CellsPerChunk+r)*lattice+c.IndexX*CellsPerChunk+col] = c.Heights[r*17+col]
+	// The synthetic tile's normals are the writer's own, so this checks that they are stored where
+	// ParseNormals reads them, through the rewrites that built the tile, and that a height edit
+	// refreshes the samples round it.
+	t.Run("synthetic", func(t *testing.T) {
+		root := syntheticTile(t)
+		terrain := mustTerrain(t, root)
+		terrain.Chunks[100].Heights[40] += 6 // an outer sample inside the chunk
+		terrain.Chunks[100].Heights[26] -= 3 // an inner one
+		out, err := WriteHeights(root, terrain, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		edited := mustTerrain(t, out)
+		normals, err := ParseNormals(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all := func(row, col int) bool { return true }
+		for i := range edited.Chunks {
+			if bad, worst, _ := normalsOff(edited, normals, i, Ring{}, all); bad > 0 {
+				t.Errorf("chunk %d: stored normals disagree with its heights (%d bytes off, worst %d)", i, bad, worst)
 			}
 		}
-	}
-	starts, err := mcnkStarts(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const chunk = 100
-	mcnr, ok := subChunk(root, starts[chunk], len(root), u32(root, starts[chunk]+0x18), "MCNR")
-	if !ok {
-		t.Fatal("no MCNR")
-	}
-	bad, worst := 0, 0
+	})
+	t.Run("client", func(t *testing.T) {
+		dir := testclient.DataDir(t)
+		dataDir, err := resolveDataDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		set, err := mpq.OpenDataDir(dataDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer set.Close()
+		read := func(x, y int) (*Terrain, [][]byte) {
+			root, err := set.ReadFile(TilePath("Azeroth", x, y, ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			terrain, err := ParseTerrain(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			normals, err := ParseNormals(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return terrain, normals
+		}
+		// Steep chunks (1, 16 to 18 and 33 of 32_48 were up to 30 off with central differences) and gentle
+		// ones (100 and 120), in a tile in Elwynn's hills and one on the Westfall coast.
+		all := func(row, col int) bool { return true }
+		for _, tile := range []struct {
+			x, y   int
+			chunks []int
+		}{
+			{32, 48, []int{17, 18, 33, 100, 120}},
+			{31, 49, []int{17, 34, 100, 136, 200}},
+		} {
+			terrain, normals := read(tile.x, tile.y)
+			for _, i := range tile.chunks {
+				bad, worst, n := normalsOff(terrain, normals, i, Ring{}, all)
+				t.Logf("%d_%d chunk %d: worst byte difference %d, %d of %d bytes off", tile.x, tile.y, i, worst, bad, n*3)
+				if bad > 0 {
+					t.Errorf("%d_%d chunk %d: recomputed normals disagree with the file (%d bytes off, worst %d)", tile.x, tile.y, i, bad, worst)
+				}
+			}
+		}
+
+		// The border of 30_40 (Duskwood's hills), with the ring from its four neighbours.
+		const tx, ty = 30, 40
+		terrain, normals := read(tx, ty)
+		// heights is a neighbour's grid as normalGrid lays it out; at reads it at half-step (R, C).
+		heights := func(x, y int) func(R, C int) float32 {
+			n, _ := read(x, y)
+			g := normalGrid(n, Ring{})
+			return func(R, C int) float32 { return g[(R+2)*padded+C+2] }
+		}
+		north, south, west, east := heights(tx, ty-1), heights(tx, ty+1), heights(tx-1, ty), heights(tx+1, ty)
+		last := 2 * (lattice - 1)
+		ring := Ring{North: make([]float32, lattice), South: make([]float32, lattice), West: make([]float32, lattice), East: make([]float32, lattice)}
+		for k := 0; k < lattice; k++ {
+			ring.North[k], ring.South[k] = north(last-2, 2*k), south(2, 2*k)
+			ring.West[k], ring.East[k] = west(2*k, last-2), east(2*k, 2)
+		}
+		outerOnly := ring
+		ring.NorthIn, ring.SouthIn = make([]float32, lattice-1), make([]float32, lattice-1)
+		ring.WestIn, ring.EastIn = make([]float32, lattice-1), make([]float32, lattice-1)
+		for k := 0; k+1 < lattice; k++ {
+			ring.NorthIn[k], ring.SouthIn[k] = north(last-1, 2*k+1), south(1, 2*k+1)
+			ring.WestIn[k], ring.EastIn[k] = west(2*k+1, last-1), east(2*k+1, 1)
+		}
+		// The file's north border doesn't follow its heights (22 of its samples differ from the north
+		// tile's, which share them), so the test reads the other three sides.
+		for _, side := range []struct {
+			name   string
+			chunks func(k int) int
+			keep   func(row, col int) bool
+		}{
+			{"south", func(k int) int { return (ChunksPerTile-1)*ChunksPerTile + k }, func(row, col int) bool { return col < 9 && row == 8 }},
+			{"west", func(k int) int { return k * ChunksPerTile }, func(row, col int) bool { return col == 0 }},
+			{"east", func(k int) int { return k*ChunksPerTile + ChunksPerTile - 1 }, func(row, col int) bool { return col == 8 }},
+		} {
+			var bad, worst, n, oneSided, outer int
+			for k := 0; k < ChunksPerTile; k++ {
+				b, w, m := normalsOff(terrain, normals, side.chunks(k), ring, side.keep)
+				o, _, _ := normalsOff(terrain, normals, side.chunks(k), Ring{}, side.keep)
+				a, _, _ := normalsOff(terrain, normals, side.chunks(k), outerOnly, side.keep)
+				bad, worst, n, oneSided, outer = bad+b, max(worst, w), n+m, oneSided+o, outer+a
+			}
+			t.Logf("%s border: worst byte difference %d, %d of %d bytes off (%d one-sided, %d with the inner samples across taken as their corners' mean)", side.name, worst, bad, n*3, oneSided, outer)
+			if bad > n*3/20 || bad >= outer || outer >= oneSided {
+				t.Errorf("%s border: normals from the ring are off the file's in %d of %d bytes (%d one-sided, %d with the inner samples across as the mean)", side.name, bad, n*3, oneSided, outer)
+			}
+		}
+	})
+}
+
+// normalsOff counts the bytes of chunk i's samples that differ from the file's normals, worked out
+// against ring, among the samples keep picks.
+func normalsOff(terrain *Terrain, normals [][]byte, i int, ring Ring, keep func(row, col int) bool) (bad, worst, n int) {
+	c := terrain.Chunks[i]
+	grid := normalGrid(terrain, ring)
 	for s := 0; s < HeightCount; s++ {
-		n := normalAt(grid, terrain.Chunks[chunk], s)
+		if !keep(s/17, s%17) {
+			continue
+		}
+		n++
+		got := normalAt(grid, c, s)
 		for k := 0; k < 3; k++ {
-			want := int(int8(root[mcnr.start+s*3+k]))
-			got := int(math.Round(float64(n[k]) * 127))
-			d := got - want
+			d := int(got[k]) - int(int8(normals[i][s*3+k]))
 			if d < 0 {
 				d = -d
 			}
-			if d > worst {
-				worst = d
-			}
-			if d > 3 {
+			worst = max(worst, d)
+			if d > 0 {
 				bad++
 			}
 		}
 	}
-	t.Logf("worst byte difference %d, %d off by more than 3", worst, bad)
-	if bad > HeightCount/10 {
-		t.Errorf("recomputed normals disagree with the file (%d bytes off)", bad)
-	}
+	return bad, worst, n
 }
 
 func TestSplitNames(t *testing.T) {

@@ -159,6 +159,7 @@
 			if (reframe) {
 				// Look a little above the box's middle (the box, not the ground: a model's origin need not be at its feet).
 				view.target.set((box.min.x + box.max.x) / 2, box.min.y + s.y * 0.55, (box.min.z + box.max.z) / 2)
+				view.setPanRange(box.min.y, box.max.y)
 				view.distance = (Math.max(s.y, s.x, s.z) / 2 / Math.tan(THREE.MathUtils.degToRad(15))) * 1.25
 				view.pitch = 0.15
 				camera.near = view.distance / 200
@@ -195,66 +196,66 @@
 </script>
 
 <div class="preview">
-  <div class="view" role="img" aria-label="Creature preview" onpointerdown={view.down} onpointermove={view.move} onpointerup={view.up} onpointercancel={view.up} onwheel={view.wheel}>
-    <canvas bind:this={canvas}></canvas>
-    <div class="overlay">
-      {#if loading}<span>Loading…</span>{/if}
-      {#if failed}<span class="warn">{failed}</span>{/if}
-    </div>
-    <!-- The press must not reach the view: its pointer capture would take the click from the check (#204). -->
-    <label class="spin" onpointerdown={(e) => e.stopPropagation()}><input type="checkbox" bind:checked={spinning} /> Turn</label>
-  </div>
-  {#if size}
-    <p class="dim">{size.h.toFixed(1)} yd tall · {size.tris.toLocaleString()} triangles · drag to turn, scroll to zoom</p>
-  {/if}
+	<div class="view" role="img" aria-label="Creature preview" onpointerdown={view.down} onpointermove={view.move} onpointerup={view.up} onpointercancel={view.up} oncontextmenu={view.contextmenu} onwheel={view.wheel}>
+		<canvas bind:this={canvas}></canvas>
+		<div class="overlay">
+			{#if loading}<span>Loading…</span>{/if}
+			{#if failed}<span class="warn">{failed}</span>{/if}
+		</div>
+		<!-- The press must not reach the view: its pointer capture would take the click from the check (#204). -->
+		<label class="spin" onpointerdown={(e) => e.stopPropagation()}><input type="checkbox" bind:checked={spinning} /> Turn</label>
+	</div>
+	{#if size}
+		<p class="dim">{size.h.toFixed(1)} yd tall · {size.tris.toLocaleString()} triangles · drag to turn, right-drag to move up and down, scroll to zoom</p>
+	{/if}
 </div>
 
 <style>
-  .preview {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    height: 100%;
-    min-height: 0;
-  }
-  .view {
-    position: relative;
-    flex: 1;
-    min-height: 0;
-    border-radius: 4px;
-    background: radial-gradient(circle at 50% 35%, #5a6373, #22262d 85%);
-    overflow: hidden;
-    cursor: grab;
-  }
-  .view:active {
-    cursor: grabbing;
-  }
-  canvas {
-    width: 100%;
-    height: 100%;
-    display: block;
-  }
-  .overlay {
-    position: absolute;
-    left: 10px;
-    top: 8px;
-    font-size: 12px;
-    color: var(--text-dim);
-    pointer-events: none;
-  }
-  .warn {
-    color: var(--danger-text);
-  }
-  .spin {
-    position: absolute;
-    right: 10px;
-    bottom: 8px;
-    font-size: 12px;
-    color: var(--text-dim);
-  }
-  .dim {
-    margin: 0;
-    font-size: 12px;
-    color: var(--text-dim);
-  }
+	.preview {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		height: 100%;
+		min-height: 0;
+	}
+	.view {
+		position: relative;
+		flex: 1;
+		min-height: 0;
+		border-radius: 4px;
+		background: radial-gradient(circle at 50% 35%, var(--preview-glow), var(--preview-edge) 85%);
+		overflow: hidden;
+		cursor: grab;
+	}
+	.view:active {
+		cursor: grabbing;
+	}
+	canvas {
+		width: 100%;
+		height: 100%;
+		display: block;
+	}
+	.overlay {
+		position: absolute;
+		left: 10px;
+		top: 8px;
+		font-size: 12px;
+		color: var(--text-dim);
+		pointer-events: none;
+	}
+	.warn {
+		color: var(--danger-text);
+	}
+	.spin {
+		position: absolute;
+		right: 10px;
+		bottom: 8px;
+		font-size: 12px;
+		color: var(--text-dim);
+	}
+	.dim {
+		margin: 0;
+		font-size: 12px;
+		color: var(--text-dim);
+	}
 </style>

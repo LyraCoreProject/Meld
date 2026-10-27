@@ -1,10 +1,14 @@
 package vmangos
 
 import (
+	"errors"
 	"math"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+
+	"Meld/internal/testclient"
 )
 
 // serverSpawn undoes regionSpawn: a spawn read into a region and written back lands where it was.
@@ -25,21 +29,52 @@ func TestServerSpawnUndoesRegionSpawn(t *testing.T) {
 	}
 }
 
+// runScript sends mariadb the script inside one START TRANSACTION … COMMIT, every statement
+// between them, and reports the runner's failure. The world tables are MyISAM, so the transaction
+// doesn't undo their writes; it still holds for InnoDB tables and keeps the script one unit.
 func TestRunScriptWrapsATransaction(t *testing.T) {
-	old := runScript
-	defer func() { runScript = old }()
+	old := pipeMariadb
+	defer func() { pipeMariadb = old }()
+	var gotArgs, gotEnv []string
 	var got string
-	runScript = func(_ worldDB, script string) error { got = script; return nil }
-	if err := runScript(worldDB{}, "DELETE FROM `creature` WHERE `guid` = 1;"); err != nil {
+	var fail error
+	pipeMariadb = func(args, env []string, input string) error { gotArgs, gotEnv, got = args, env, input; return fail }
+	db := worldDB{host: "h", port: "1", user: "u", password: "secret", name: "mangos"}
+	statements := []string{"DELETE FROM `creature` WHERE `guid` = 1;", "INSERT INTO `creature` (`guid`) VALUES (2);"}
+	if err := runScript(db, strings.Join(statements, "\n")); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, "guid` = 1") {
-		t.Fatalf("script %q", got)
+	// The script comes on stdin: no -e, and the database name stays the last argument.
+	if len(gotArgs) == 0 || gotArgs[len(gotArgs)-1] != "mangos" {
+		t.Fatalf("args %v", gotArgs)
 	}
-	// The real runner reads the script from stdin and keeps the database name as its last argument.
-	args := worldDB{host: "h", port: "1", user: "u", password: "p", name: "mangos"}.args("")
-	if args = args[:len(args)-2]; args[len(args)-1] != "mangos" {
-		t.Fatalf("args %v", args)
+	for _, a := range gotArgs {
+		if a == "-e" {
+			t.Fatalf("args %v pass -e; the script must come on stdin", gotArgs)
+		}
+		if strings.Contains(a, "secret") {
+			t.Fatalf("args %v hold the password; it goes in MYSQL_PWD (#482)", gotArgs)
+		}
+	}
+	if !reflect.DeepEqual(gotEnv, []string{"MYSQL_PWD=secret"}) {
+		t.Fatalf("env %v, want the password in MYSQL_PWD", gotEnv)
+	}
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	if len(lines) != len(statements)+2 || lines[0] != "START TRANSACTION;" || lines[len(lines)-1] != "COMMIT;" {
+		t.Fatalf("script not wrapped in one transaction:\n%s", got)
+	}
+	for i, s := range statements {
+		if lines[i+1] != s {
+			t.Fatalf("line %d = %q, want %q inside the transaction:\n%s", i+1, lines[i+1], s, got)
+		}
+	}
+	if strings.Count(got, "START TRANSACTION") != 1 || strings.Count(got, "COMMIT") != 1 {
+		t.Fatalf("one transaction expected:\n%s", got)
+	}
+	// A failing statement makes mariadb exit non-zero before COMMIT; runScript must say so.
+	fail = errors.New("mariadb: exit status 1: ERROR 1146")
+	if err := runScript(db, statements[0]); !errors.Is(err, fail) {
+		t.Fatalf("runScript = %v, want the runner's error", err)
 	}
 }
 
@@ -81,10 +116,7 @@ func TestNoScriptBuilderOpensATransaction(t *testing.T) {
 // TestRunScriptLive pipes a script that changes nothing to the server's world database, to check the
 // runner reaches it. It needs VMANGOS_DIR with the database running.
 func TestRunScriptLive(t *testing.T) {
-	dir := os.Getenv("VMANGOS_DIR")
-	if dir == "" {
-		t.Skip("VMANGOS_DIR not set")
-	}
+	dir := testclient.ServerDir(t)
 	db, err := worldDatabase(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -175,10 +207,7 @@ func TestLikePattern(t *testing.T) {
 // TestSearchCreaturesLive searches the server's creature templates. It needs VMANGOS_DIR with the
 // database running.
 func TestSearchCreaturesLive(t *testing.T) {
-	dir := os.Getenv("VMANGOS_DIR")
-	if dir == "" {
-		t.Skip("VMANGOS_DIR not set")
-	}
+	dir := testclient.ServerDir(t)
 	got, err := SearchCreatures(dir, "Northshire Guard", 10)
 	if err != nil {
 		t.Fatal(err)

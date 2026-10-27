@@ -1,10 +1,10 @@
 package vmangos
 
 import (
-	"os"
 	"strings"
 	"testing"
 
+	"Meld/internal/testclient"
 	"Meld/internal/wow"
 )
 
@@ -20,7 +20,7 @@ func itemDisplayDBC(t *testing.T) *dbcTable {
 }
 
 func TestListItemDisplays(t *testing.T) {
-	rows := [][]string{{"7", "13", "Blade", "2", "7"}, {"7", "21", "Edge", "2", "7"}, {"7", "13", "Cutter", "2", "7"}, {"9", "20", "Robe", "4", "1"}}
+	rows := []batchRow{{"7", "13", "Blade", "2", "7"}, {"7", "21", "Edge", "2", "7"}, {"7", "13", "Cutter", "2", "7"}, {"9", "20", "Robe", "4", "1"}}
 	got := listItemDisplays(itemDisplayDBC(t), rows)
 	if len(got) != 4 {
 		t.Fatalf("%d displays", len(got))
@@ -82,15 +82,13 @@ func TestIconNames(t *testing.T) {
 // TestItemLooksLive lists the client's item displays and icons. It needs WOW_DIR, and VMANGOS_DIR
 // (database running) for the displays' items.
 func TestItemLooksLive(t *testing.T) {
-	clientDir := os.Getenv("WOW_DIR")
-	if clientDir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	clientDir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(clientDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	displays, err := ListItemDisplays(os.Getenv("VMANGOS_DIR"), dataDir)
+	server := testclient.ServerDirIfAny()
+	displays, err := ListItemDisplays(server, dataDir)
 	if err != nil || len(displays) < 10000 {
 		t.Fatalf("%d displays, %v", len(displays), err)
 	}
@@ -101,7 +99,7 @@ func TestItemLooksLive(t *testing.T) {
 	kinds := map[string]int{}
 	for _, d := range displays {
 		kinds[d.Kind]++
-		if d.ID == 8690 && os.Getenv("VMANGOS_DIR") != "" && (d.Kind != "weapon" || d.Icon != "INV_Hammer_15" || len(d.Names) == 0) {
+		if d.ID == 8690 && server != "" && (d.Kind != "weapon" || d.Icon != "INV_Hammer_15" || len(d.Names) == 0) {
 			t.Errorf("Battleworn Hammer's display %+v", d)
 		}
 	}
@@ -119,7 +117,7 @@ func TestShotVisuals(t *testing.T) {
 		[]any{21, "Bow_2H_Crossbow_A.mdx", "", "XbowSkin", "", "INV_Weapon_Crossbow_01", 0, 0, 0, 0, 743},
 		[]any{22, "Bow_A.mdx", "", "XbowSkin", "", "INV_Weapon_Bow_09", 0, 0, 0, 0, 743},
 	)
-	rows := [][]string{{"20", "15", "Shortbow", "2", "2"}, {"21", "26", "Crossbow", "2", "18"}}
+	rows := []batchRow{{"20", "15", "Shortbow", "2", "2"}, {"21", "26", "Crossbow", "2", "18"}}
 	got := listItemDisplays(tab, rows)
 	if got[0].Shoots != 2 || got[1].Shoots != 18 || got[2].Shoots != 18 || got[2].Visual != 743 {
 		t.Fatalf("shoots %d %d %d", got[0].Shoots, got[1].Shoots, got[2].Shoots)

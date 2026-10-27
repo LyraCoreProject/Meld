@@ -5,11 +5,11 @@ Chrome, probes, scenes, measuring performance) are in `docs/TESTS.md`; read that
 
 ## Growing a region (the Map panel's plus)
 
-Checks: `extendRegion` (`io/mapio.ts`) and `grownBlock` (`io/regionGrow.ts`, unit tests in
+Checks: `extendRegion` (`io/region.ts`) and `grownBlock` (`io/regionGrow.ts`, unit tests in
 `tests/regionGrow.test.ts`). In the dev page, with a region open and `editor.svelte.ts` as `ed`:
 
 ```js
-const m = await import('<the loaded mapio.ts URL>')
+const m = await import('<the loaded region.ts URL>')
 ed.editor.regionBlock                         // e.g. {x: 32, y: 48, size: 1}
 await m.extendRegion(window.__engine, 'e')    // opens 2×2 at the same origin, closes the 1×1 tab
 ed.editor.regionBlock, ed.docs.tabs.length    // {x: 32, y: 48, size: 2}, the tab count unchanged
@@ -25,7 +25,7 @@ ed.editor.regionBlock, ed.docs.tabs.length    // {x: 32, y: 48, size: 2}, the ta
 ## Opening a region: the alpha maps' handoff (#636, probe `region-alpha`)
 
 Checks: `App.LoadRegion` (and `LoadBuildingMap`) put the block's alpha maps in `App.handoffs`
-(`internal/handoff`) instead of the reply, and `openRegionView` (`io/mapio.ts`) fetches them from the
+(`internal/handoff`) instead of the reply, and `openRegionView` (`io/region.ts`) fetches them from the
 `alphaUrl` and hands each layer its 4096 bytes in chunk order. `bun run probe region-alpha` checks the
 reply, the bytes and that the URL is served once, and prints the times (2026-10-21, Azeroth 31_49 3x3 in
 the dev page: the call 375-465 ms with 36.5 MB of JSON before, 220-300 ms and 3.85 MB plus a 16-24 ms
@@ -43,7 +43,7 @@ tool's Hole mode. Unit tests: `tests/holes.test.ts`. In the dev page, without a 
 
 ```js
 const ed = await import('<editor.svelte.ts URL>'); const e = __engine; const t = e.terrain; const cs = t.cellSize
-const cx = Math.floor(326 / cs), cz = Math.floor(720 / cs)       // a region's cells are 4.17 units, a new map's 2
+const cx = Math.floor(326 / cs), cz = Math.floor(720 / cs)       // every map's cells are CELL_SIZE, 4.17 yd
 ed.editor.tool = 'select'; ed.editor.selection = { x0: cx - 2, z0: cz - 2, x1: cx + 3, z1: cz + 3 }; e.setHoleInSelection(true)
 ed.editor.selection = null; ed.editor.tool = 'sculpt'; ed.editor.sculptMode = 'hole'; ed.editor.holeFill = true
 const hit = e.controller.target.clone().set((cx + 0.2) * cs, 0, (cz + 0.2) * cs)
@@ -97,6 +97,107 @@ under the brush goes to the level under the first click.
 - A probe edit that breaks a Svelte file's parse breaks the owner's own `wails dev` window too until
   it is fixed: check `curl localhost:34115/src/components/<File>.svelte` gives 200 after editing.
 
+## Terrain › Smooth Selection (#713), with Raise, Lower, Flatten and Roughen (#721)
+
+Checks: the area smoothing pass. The kernel, the edge falloff and the sliced run are
+`terrain/smoothArea.ts`, unit tests in `smoothArea.test.ts` (a pass equals the brush's 3x3 average,
+edges included; weight-0 vertices keep their height; the falloff rises from 0 to full over the band;
+cancel stops at the next turn). In the live app, `bun run probe smooth-selection`: on a Mountains map
+(256, seed 3) with a yard of seeded noise over a 60-cell square, `Engine.smoothArea` with a hard edge,
+with the falloff and over a free-form half of the square (`setAreaCells`) changes only the area's inner
+vertices, cuts the bends (second difference) to well under a third, undoes and redoes exactly as
+"Smooth selection", the falloff moves the vertices next to the edge less than half as far, and a
+cancelled run changes nothing. The Mountains preset alone is too smooth to measure: add the noise.
+
+The one-pass shapes (#721, `shapePatch`) have unit tests in the same file (raise and lower by the
+amount times the weight, flatten to the weighted vertices' mean or to a height, roughen within the
+amplitude, in world space and by seed). The probe also runs Raise and Lower by 5 yd (the square's
+middle moves exactly 5), Flatten to the average (no spread left in the middle) and to 42 yd, and
+Roughen (more bend than before), each hard-edged and with the falloff, checking nothing outside the
+square changes and undo and redo are exact under the mode's label; and it opens the dialog, checks
+Mode lists the five and that picking Flatten shows its target and names the button.
+
+## A new world's ground: presets in yards, erosion at creation, Canyon and the seabed (#744, probe `new-world-shape`)
+
+Checks: the New world page's presets and sliders. `presetHeight` (`terrain/presets.ts`) and
+`generateHeights` (`terrain/generate.ts`) have unit tests in `terrainGenerate.test.ts`: the presets'
+heights in yards (Rolling hills 35 to 110 yd, Mountains over 150), detail keeping its size on a 6x6
+map (the mean slope round the middle against a 1-tile map's), Height scaling only the land, Roughness
+0 dropping the detail, Land growing the land's share (also on an L of tiles), erosion seeded and changing the ground, the open sea's floor and Sea depth, and
+a Canyon no one can walk out of: a flood fill from the middle over vertices whose gradient is under
+50 degrees (the server's `walkableSlopeAngle`) never reaches the map's edge, for 1 and 2 tiles, with
+and without erosion, at Height 0.4 and Roughness 2. In the live app, `bun run probe new-world-shape
+--shot <dir>` makes Large Mountains, Rolling hills and Canyon worlds through the dialog and saves a
+view over each.
+
+- To judge how a preset looks without the app, a Bun script can call `generateHeights` for a map
+  and write a hillshade (the gradient towards the north-west, coloured by height and slope as
+  `autoPaint` does) as a PPM, which `magick` turns into a PNG; a 4x4 map takes about 0.4 s with
+  erosion. Look at a crop at full size too: one-vertex spikes (a checkerboard) don't show scaled down.
+- Walk-out test traps: test the ground's own gradient at each vertex, not the slope between two
+  vertices along the step, since along that any wall can be crossed sideways. Erosion's gullies cut
+  ramps through a Canyon wall, which is why `generateHeights` lays the walls on after it.
+- A probe's view over a new map: `controller.setView(x, y, z, yaw, pitch, distance)` needs Follow the
+  Ground on; with it off the camera sits on the target and the distance does nothing. Keep the
+  distance under 900 (`maxDistance`) and inside the fog, or the shot is the sky's colour.
+
+## A new world from a heightmap (#745, probe `new-world-image`)
+
+Checks: the New world page's From a heightmap… card. `imageGroundHeights` has a unit test in
+`terrainGenerate.test.ts` (black and white at Min and Max, bilinear between samples, erosion moving the
+ground). In the live app, `bun run probe new-world-image --shot <dir>` stubs `OpenHeightmapDialog` and
+`ReadHeightmap` on `window.go.main.App` with a 64-pixel grey cone made in the page (no file, no client
+sandbox), picks it, sets Black -40 and White 200 and makes a Small world: its middle near 200 yd, its
+corners at -40 under a sea at 0. About 25 s.
+
+- Stubbing a file binding: the generated `wailsjs` functions look `window.go.main.App.<Name>` up at
+  call time, so assigning it in the probe (and putting it back in a `finally`) reaches the dialog's
+  imports too; a stubbed `ReadHeightmap` returns `{ side, heights }` with heights from -1024 (black) to
+  1024 (white), as `internal/heightmap` decodes them.
+
+## A new world painted with a zone's textures (#733, probe `new-world-pack`)
+
+Checks: the New world page's Ground textures. `go test ./internal/vmangos -run 'ChunkCover|ZoneAreas'`
+tests the shares (a layer's alpha of what the layers above leave, cells under a liquid left out) and
+the subzones; `TestRealZoneTextures` (with the client, `make test-full`) reads Tanaris and Duskwood and
+logs their shares, the list `frontend/tests/texturePack.test.ts` sorts into roles (Tanaris: sand
+ground, more sand as the lush patches, rock for the peaks; Duskwood: dirt ground, grass patches,
+cobblestones). In the live app, `bun run probe new-world-pack --shot <dir>` picks Tanaris, waits for
+the eight pictures (about 3 s), makes a Small Island and checks its palette and that the ground uses
+the ground and sand roles; then Default again shows no pictures. About 35 s.
+
+- The Go change needs `make dev` to have rebuilt the app (it watches the Go files); a probe run
+  against a stale one fails on `ZoneTextures` missing from `window.go.main.App`.
+
+## A new world with a zone's trees (#758, probe `new-world-trees`)
+
+Checks: the New world page's Trees and rocks. `go test ./internal/vmangos -run 'PlacementCell|DoodadList'`
+tests finding the chunk and cell under a placement (and not a neighbour tile's chunk) and the counts;
+`TestRealZoneDoodads` (with the client, `make test-full`) logs Duskwood's, Tanaris's and Elwynn's most
+placed models and their density (Duskwood about 30 models per 100x100 yd, Tanaris 6, Elwynn 20, every
+kind). `frontend/tests/zoneTrees.test.ts` checks the sorting by path (trees, bushes, rocks, and the
+fences, tombs and props left out) and the brushes. In the live app, `bun run probe new-world-trees
+--shot <dir>` makes a Small Island with Duskwood's textures and trees: every model a tree, bush or rock,
+none in the sea or on the beach, on too steep a slope or above the snow line, two undo steps; then one
+with None and no models. Logs how long Create world took (about 3.5 s). About 90 s.
+
+- `new-world-pack` also scatters Tanaris's trees now, since the trees follow the pack by default.
+
+## A new world's sea level and lakes (#759, probe `new-world-lakes`)
+
+Checks: the New world page's water row. `frontend/tests/lakes.test.ts` checks the basin fill
+(`water/lakes.ts`): a bowl fills to its rim, a slope holds none, a basin under the sea is the sea's,
+a puddle and a basin covering most of the map stay dry, the layers `fillLakes` writes, and the shore
+levels. In the live app, `bun run probe new-world-lakes --shot <dir>` ticks Lakes with Magma (the
+Rolling hills picture turns orange in its basins), sets Sea level to 5 and makes a Medium Rolling
+hills world: the sea at 5, only magma layers, every covered cell's surface above the sea and over
+ground lower than it, sand in every lake chunk, and `exportInput` sending the layers. About 40 s.
+
+- The lakes come from the generated heights, so a change to a preset or to erosion moves them; the
+  probe asks only for more than 50 covered cells (seed 4242 gives two lakes, 3787 cells).
+- `findLakes` drops a basin covering more than `maxShare` (12%) of the map, so a test grid of a few
+  dozen vertices needs a larger share (`tests/lakes.test.ts` uses 0.5).
+
 ## Sculpt › Erode and Terrain › Erode (#165)
 
 Checks: the Erode brush (water and thermal) and the area pass. The droplet and thermal models are
@@ -112,8 +213,8 @@ cone's foot, empty on its peak, nothing outside the rect written).
 
 - To see it, a scratch probe can `e.controller.setView(x, y, z, 0.8, 0.7, 380)` over the highest peak
   and run `bun run probe <file> --shot <dir>` with and without `erodeArea` (density 1, 5 passes): the peak
-  comes out lower and gullied. The 256 Mountains preset is only about 60 yd high, so a stroke there is
-  stronger than on a client continent.
+  comes out lower and gullied. Before #744 the 256 Mountains preset was only about 60 yd high; it now
+  reaches 150 yd or more, closer to a client continent.
 - To see the mask, a scratch probe can draw the area's heights and `t.mask` side by side into a
   `{ w, h, px }` picture and `P.save` it (spot (68, 52) of that map): the mask lies in the low ground
   beside the ridge, about 45% of the square's texels, a sixth of them full.
@@ -358,13 +459,76 @@ set `editor.tool = 'water'`, `editor.water.allLayers = false`, `editor.water.lay
 `__engine.frame()` and count the cells in `__engine.doc.liquidRenderer.group`'s meshes
 (`index.count / 6`): 64 rather than 128, and the mesh's `kind` attribute is the second layer's.
 
+The region save's side of the layers: `go test ./internal/vmangos/ -run TestRegionLiquidsRoundTrip`
+(#404, no client needed) edits a made-up 2x2 block's liquids (a lake turned ocean at sloping heights
+and varied depths with magma under it as a second layer, a lake removed, new slime, a magma chunk
+handed back as read), saves it with `BuildRegion` and reads the MCLQ back with `adt.ParseLiquids`:
+types, cells, all 81 heights and the depths must match, and no other chunk gains a liquid. It also
+checks a partial save (`PartialLiquids`). Magma and slime read their depths as 255 (the file holds
+texture coordinates there), so don't compare theirs.
+
+## The coast while the camera moves (#747, probe `coast-foam`)
+
+Checks: the line where the sea meets the land doesn't sparkle in flight. `bun run probe coast-foam
+--shot <dir>` makes a Large Island on the New world page, looks at its west coast from 1200 yd, takes
+four shots a sub-pixel turn apart and counts the pixels on the coast whose brightness swings by over
+30, with the terrain's foam line as drawn, as it was before #747 and taken out. The thin line (0.35 yd
+either side of the waterline, under a pixel far off or on a steep shore) gave 250 to 275 against 40
+to 50 without foam; widened to the pixel and dimmed to match (`band` in `TerrainMaterial.ts`), about
+100. Once the sea became a grid (the next entry) the whole coast held far steadier, on SwiftShader too:
+17 thin, 4 widened, 4 without foam, so the probe now passes while the widened line adds under 20.
+
+- The swing of shots a sub-pixel apart is the way to see shimmer in a still probe: a feature thinner
+  than a pixel swings, a band-limited one barely does. Save the swing as a grey picture (the probe's
+  `-spread` shots) and look at where it is bright.
+- Hold the clock (`P.e.timer.setTimescale(0)`, as `shadow-poses` does): the sea's frame advances 24
+  times a second and swings the whole sea between shots. Replacing the sea material's `oceanTex`
+  uniform after it compiled freezes nothing (three keeps the uniform objects it first saw). Run
+  `P.settle()` and a few frames first, so no texture arrives between two shots.
+- Count only a region round the coast: on a rugged island the inland ridges outweigh it.
+- The depth buffer's step is not the cause (measured on 2026-10-26: the near plane at 5 yd instead of
+  0.5 gave the same swing, and for a 24-bit buffer the band where the sea and a beach are within one
+  step is under a yard wide at 2000 yd). But on a real GPU the sea's own depth was: see the next entry.
+  This probe runs on SwiftShader, which never showed it.
+
+## The coast in flight on a real GPU (#747, probe `coast-flight`)
+
+Checks: the shore doesn't swap sea and land as the camera flies. The owner saw it in the desktop
+window after `coast-foam`'s fix: still, nothing; holding W, the coast flickered back and forth. The
+cause was the sea drawn as one quad ten map widths across: on the GPU (D3D11 through ANGLE) its depth,
+clipped round the camera, came out a little different each frame the camera moved, so along the whole
+shoreline the ground and the sea took turns in front. Built as a grid of cells about a tile wide
+(`Water.ts`) it holds still; even 16 cells a side did. `PROBE_GPU=1 bun run probe coast-flight
+--shot <dir>` makes the Large Island of `coast-foam` (seed 4242), looks at its west coast from 1200
+yd, takes six shots with the camera stepped 0.37 yd apart and counts the pixels whose brightness jumps
+by over 25 at least twice, with the sea as drawn and as the old quad: 1 against 551 on an RTX 5080.
+
+- Only a real GPU shows it: on SwiftShader both counted 2 to 3. Without `PROBE_GPU=1` the probe only
+  checks the grid's count stays low.
+- Hide the sea through its material (`water.material.visible = false`): the Engine sets
+  `water.mesh.visible` again every frame.
+- Turning the shadows pref off before a run of shots (5 frames settled) made about 14,000 pixels jump,
+  the whole land, not the coast; not looked into, so leave the pref alone in such a comparison.
+
+## The sea past the map's edge (#748, probe `sea-edge`)
+
+Checks: the sea's colour carries on across the map's edge instead of stepping to the deep colour
+there. `bun run probe sea-edge --shot <dir>` makes a flat map under 20 yd of sea, looks down at the
+west edge from 600 yd, and compares 9 by 9 pixel boxes 6 yd either side of the edge (a step of about
+1 now) and one 250 yd or more past the north edge (darker, about 78 against 87). It then patches the
+sea shader's `past` back to a jump straight to deep, as before #748, and checks the step comes back
+(about 29); the `step` shot shows the map's square as a pale rectangle in a dark sea.
+
+- The camera needs `setFollowGround(true)` before `setView`: flying, the target is the camera's own
+  position, and `project` puts the edge off the view.
+
 ## Baked shadows: bake, paint, save and export (B-057, #16)
 
 Checks: a region's client shadows become the map's, the Map data tool's Shadow mode paints them,
 Terrain › Bake Shadows and Clear Shadows work with undo, the map file keeps them (version 6) and the
 export sends each chunk's MCSH as the client has it.
-- Go: `TestRewriteShadowReadsBack` (a synthetic tile) and, with `WOW_DIR=C:/WoW/client`,
-  `TestRewriteClientShadowsUnchanged` (Northshire's 256 chunks sent their own maps back read back with
+- Go: `TestRewriteShadowReadsBack` (a synthetic tile) and `TestRewriteClientShadowsUnchanged` (on the synthetic
+  tile and, with the client, Northshire's 256 chunks sent their own maps back read back with
   the same bytes and flags), plus `TestReadsVersion5WithoutShadows` and `TestNoShadowsStayNone` in mapfile.
 - Dev page: open Northshire with `__loadScene('Meld scene ' + JSON.stringify({v:1, map:{region:{mapName:'Azeroth',x:32,y:48,size:1}}}))`
   (`v: 1` is required) and drive `__engine.frame()` until `__engine.terrain.shadow` is set: 512911 of
@@ -391,20 +555,59 @@ export sends each chunk's MCSH as the client has it.
   second: a loop that yields with `setTimeout(0)` crawls there (the bake took over a minute). Yield
   through a `MessageChannel` instead.
 
-## The unknown state of liquids and chunk data across a save (#525)
+## The .wmap snapshot round trip and every readable version (#431)
 
-A region `.wmap` saved before version 4 (liquids) or 5 (area IDs, chunk flags, no-tuft cells) opens
-with `MapDocument.liquidsKnown` / `chunkDataKnown` false, and Compile then leaves the client's own
-alone. The header's `liquidsUnknown` / `chunkDataUnknown` keep that across a save.
+`toMapData` and `fromMapData` (`io/mapData.ts`, free of the runes state) turn the document into the
+`MapData` Go writes and back, where #120 (a region without liquids failed to open) and #161 (a map
+with roles or a region failed to save) were.
 
-- Unit: `bun test tests/mapData.test.ts` (`toMapData` → JSON → `fromMapData` keeps both flags, a
-  known map writes neither, version 3 and 4 files open without them) and `go test ./internal/mapfile/
+- Unit: `bun test tests/mapData.test.ts`. "the .wmap snapshot round trip" sends a map with every
+  optional field set through `toMapData` → JSON → `fromMapData` and compares it whole, checks that one
+  with every optional field unset writes none of them and reads back the defaults, and covers the
+  #120 and #161 cases. "every readable .wmap version opens" has one hand-written `MapData` per
+  version 1 to 7, built from `internal/mapfile`'s test streams (`writeV1`, `writeOld`), with the blobs
+  each version has (7, #46, adds no blob: its case is a map made for the client with `tileX`, `tileY`
+  and `tiles`).
+- When the format gets a version 8: add its fixture there (the previous one plus the new field), and
+  the new field to `fullSnapshot`. The Go side's own fixtures are `go test ./internal/mapfile/`. The
+  probe `unknown-flags` checks the version a save reads back as: bump it there too.
+- Go (#545): `go test ./internal/mapfile/ -run TestFixtures` reads the committed
+  `internal/mapfile/testdata/v1.wmap` to `v7.wmap` (a 16-cell map written once by each version's
+  layout, `writeVersion` in `version_test.go`) and checks each opens with its header and exactly the
+  blobs that version had, saves again at `Version` with the same blobs, and that `Write` still lays out
+  the current fixture byte for byte (the JSON header aside). So a reader that drops or reorders a tail
+  blob fails even when `Write` and `Read` change together. For a version 8: add its case to
+  `writeVersion` and `fixtureMap`, bump `Version`, then `go test ./internal/mapfile/ -run TestFixtures
+  -update`, which writes only the missing `v8.wmap` (a version that changes only the header, as 7 did,
+  needs only the bump in `writeVersion`'s range: its layout is the one before). Never regenerate an existing fixture (delete and
+  `-update`): a fixture made by the code it tests checks nothing.
+- Trap: `toEqual` treats a key set to `undefined` as missing, so a field `fromMapData` forgets to read
+  but whose snapshot value is `undefined` passes; give every optional field in `fullSnapshot` a value.
+
+## The unknown state of holes, liquids and chunk data across a save (#525, #663)
+
+A region `.wmap` saved before version 3 (holes), 4 (liquids) or 5 (area IDs, chunk flags, no-tuft
+cells) opens with `MapDocument.holesKnown` / `liquidsKnown` / `chunkDataKnown` false, and Compile
+then leaves the client's own alone (the holes cut since are added to the client's). The header's
+`holesUnknown` / `liquidsUnknown` / `chunkDataUnknown` keep that across a save.
+
+- Unit: `bun test tests/mapData.test.ts` (`toMapData` → JSON → `fromMapData` keeps the flags, a
+  known map writes none, version 2, 3 and 4 files open without them) and `go test ./internal/mapfile/
   -run TestUnknownFlagsRoundTrip` (the header round trip).
 - Probe `unknown-flags`: Northshire saved through Go (`SaveSceneMap`, `LoadMap`) and opened again,
-  first as opened from the client (no flag written), then with both flags set false and saved twice:
-  they stay false, the export sends no chunk headers and partial liquids, and Map Properties lists
-  them under "The client's".
-- Trap: `Engine.regionKey` hashes both flags, so a region whose flag is false has another compile
+  first as opened from the client (no flag written), then with the three flags set false and saved
+  twice: they stay false, the export sends no chunk data and partial liquids, and Map Properties lists
+  them under "The client's". A hole cut there still reaches `mapToTiles`'s chunk header, with area
+  ID 0 and no `impassable` or `noEffect`, which keep the client's (#644), and with `holesAdd`, while
+  a chunk without a hole sends none (#663).
+- Unit: `bun test tests/chunkFlags.test.ts` (a map without chunk data sends holes and shadows only;
+  one without holes sends them added, only for the chunks that have one), `go test ./internal/adt/
+  -run TestRewriteHolesReadBack` (added holes join the chunk's, replaced ones don't)
+  and `go test ./internal/vmangos/ -run 'TestHeaderSpecImpassableOptional|TestRegionHolesRoundTrip'`
+  (the second needs `WOW_DIR`: holes-only headers leave every chunk's zone, flags and no-tuft cells
+  as a save without headers has them; compare with that save, not with `ReadTile`, which reads
+  Meld's patch while a region save starts from the unpatched tile).
+- Trap: `Engine.regionKey` hashes the flags, so a region whose flag is false has another compile
   fingerprint than the same region with it true (decision #82); that is wanted, as Compile writes
   differently.
 
@@ -494,3 +697,98 @@ creature's way round obstacles.
   a change (sculpt, a model loading or moving, a liquid edit) holds the build until 400 ms pass without one,
   so while models stream in after a region opens nothing builds; the roofs get navmesh too, as on the
   server (they are walkable, only unreachable).
+
+## The world view: streamed tiles and Edit Here (#15, probe `world-view`)
+Checks: File › World View (from a region) and the Start dialog's World View button open a map's world
+view, which streams the client's tiles and their models around the camera and lets go of the far
+ones; Edit Here opens the block around the camera in a region tab, the camera kept.
+- Probe `perf-world-flight` (#742, a benchmark, left out of `--all`; about 140 s): flies 120 frames east at 8 yd a frame, 100 yd over Elwynn's ground, and prints the frame CPU (mean, p50, p90, p99, max), the far shadow redraws (`farRedraws`, `farCauses`: the `Engine.shadowKey` parts that changed since the last far redraw, `objects+textures` for models and textures landing, `fit` when none did, so the fit moved), their frame CPU against the other frames', the far pass's calls and ms, the tiles landed and `worldStats()` at the end. Each frame is followed by `P.drawn()`: skipping it only moves the stall into the GPU backlog. Run it before and after a change to the stream or the shadows; 2026-10-26 after fb785d4: 4 far redraws in 120 frames (3 for a scene change, 1 fit), far frames 22 ms against 10, far pass 2,062 calls and 5.9 ms.
+- Probe `world-view` (`bun run probe world-view`, about 90 s with the models): opens Azeroth's world view at the
+  Elwynn block 31-33 x 48-50, waits for the tiles within the reach to load (`engine.worldStats()`:
+  loaded, loading, queued, failed and the map's tile count), checks the camera looks at the block's
+  middle on the ground, that each tile is drawn at `groundStride` for its distance (`strides`, with
+  `worldStats().strides` counting the tiles at 1, 2 and 4), that the WDL horizon is drawn past the
+  ground and on no tile whose ground is drawn (`horizon`: its tiles, those on ground, the share of the
+  view it changes; `worldStats().horizon`), that the ground is drawn (a shot with `doc.world.group` hidden differs), that
+  the tiles within `PAINT_REACH` are drawn in their texture layers once those load and none past
+  `PAINT_DROP` is (`paint`: painted, near ones left unpainted and far ones painted, both 0, and the
+  share of the view that changes with the painted tiles put back in their minimap colour; `worldStats()`
+  counts `painted`, `painting`, `paintWaiting` and `paintFailed`), that the tiles' liquids are drawn
+  (`liquids`: `worldStats().wet` tiles with water and their `liquidTriangles`, and the share of the
+  view that changes, looking down at a cell of the loaded lake nearest the eye, with the tiles' liquid
+  meshes hidden), that
+  the models are drawn (the same with `doc.objects.group`) and placed once (as many as the loaded
+  tiles list unique IDs), that no doodad (M2) is drawn further across the ground than
+  `doodadReach` gives for its size and some are left out for it (`doodads`: drawn, past, cut), that a
+  Sculpt click makes no undo step, that the commands on the map's ground and models do nothing
+  (`commandsOff`: Select All and Select Models of Type select nothing, a paste doesn't start, Clear
+  Height, Remove Duplicate Models and Bake Shadows leave no undo step, no dirty tab and every model
+  placed; with `Engine.refuseInWorld` off, Remove Duplicate Models takes away the client's doubled models (two here, such as the Elwynn haystack)
+  and the check fails), that the scene line names `world`, that flying four tiles east loads
+  the tiles there and drops the ones behind, with the models only they used (`released`: no batch
+  left without objects, the types gone, and of those not used elsewhere how many the registry still
+  keeps, through `isKept` in `models/assets.ts`, which must be 0; `farRedraws`: while the tiles
+  there stream in and 32 frames after, the far shadow map's redraws for a scene change, none within
+  30 frames of the last far redraw, `early` must be 0: with `WORLD_FAR_FRAMES` at 1 it was 10 in 41
+  frames), then Edit Here (a project lent in the state) and File ›
+  World View back, the camera where it was each way, and that every building of the region stands
+  where the world view has it, the block's corner apart, and that on every tile of the block the
+  world view painted, each chunk's textures and every texel's weights are the region's (`regionPaint`:
+  slots and texels off, both 0; the region's palette is `editor.palette`, which the frame hands to
+  its terrain, so `terrain.palette.entries` can still be empty right after the tab opens), and that
+  each chunk's liquid layers are the region's, in order, with the same cells, heights and depths
+  (`regionLiquids`: `off` 0; 414 layers over the 9 tiles at 35-37 x 49-51). It reports `perf` with the models and
+  without (not checked): at the Elwynn view, reach 3, about 26,000 models, 4,500 draw calls, 3.4M
+  triangles and 26 ms of CPU against 3 ms bare, on 2026-10-25; with the doodads' reach, 4,070 calls,
+  3.0M triangles and 21 ms (WMO groups are most of the calls, and the shadow cascades about 60%);
+  with the ground's strides, 2.45M triangles, the bare ground's 687k down to 143k; the horizon adds
+  about 180k triangles and no draw call worth counting.
+- Probe `world-minimap` (about 12 s): in Azeroth's world view the minimap is the overview cut to the
+  map's tiles' square (`worldExtent`, `bun test tests/worldMinimap.test.ts`), the heights canvas hidden,
+  the marker on the camera and Edit Here's block outlined; a click on a tile some way off moves the
+  camera's look point there, on the ground once that tile loads (flying, the target is the eye: the
+  probe takes the view's offset back off); Ctrl+Shift+P refuses. Trap: a synthetic click's
+  `clientX` is whole pixels, a sixth of a tile on this minimap, so the probe works out the point from
+  the pixel it clicked.
+- Probe `world-detail` (about 30 to 60 s): View › Detail info in Azeroth's world view at a painted
+  spot and at a lake's cell names the streamed ground (tile, chunk, map cell, height, zone, texture
+  layers, liquids), and after Edit Here the region's readout at the same spots has the same tile,
+  chunk, height, hole, zone, impassable flag, no-tufts bit (#755), layers and liquids, its cell the world's less the block's corner. The cursor is
+  `P.pointer` after a `pointerenter` on the canvas; the readout is `stats.detail`, refreshed at 2 Hz.
+  Trap: aim at a cell's middle, not its edge: the cursor lands a few hundredths of a yard off, which
+  on an edge reads the next cell and a different blend of layers.
+  `bun test tests/worldDetail.test.ts` covers `worldCellDetail` (chunk, cell, hole, zone, flags, shares, liquids). In the
+  dev page the zone reads `Area 18 (18)`: without the desktop app's bindings there is no area table
+  to name it, in the region's readout too.
+- Probe `world-map-id` (about 5 s): a world tab's map ID (#754) is its own map's, by its folder:
+  Kalimdor's world view answers `openMapId` with 1 and Client Lighting reads Kalimdor's lights
+  (`clientLightsMap`), Azeroth's answers 0. Trap: every other world-view probe opens Azeroth's, where
+  0 is right by luck; and `P.until` waits on a falsy answer, so the probe wraps the 0 in an array.
+- Probe `world-teleport` (about 5 s): in Kalimdor's world view near Orgrimmar, Copy Teleport at the
+  cursor (`teleportAtCursor`) gives `.go xyz ... 1` at the streamed ground under the cursor, and
+  `playerSpot` and `spotOfDoc` stand on the streamed ground on map 1 (#756). The probe's camera flies,
+  so `playerSpot` stands below the eye, not the cursor.
+- `bun test tests/selectObjects.test.ts`: a look-only layer (the world view's streamed models) selects nothing.
+- `bun test tests/horizonMesh.test.ts`: the world view's horizon packs the tiles it keeps, in order.
+- `bun test tests/worldLiquid.test.ts` and `go test ./internal/wow/ -run EncodeLiquids`: a tile's
+  liquids reply (`/wow/groundliquids`) reads back, and meshes each covered cell at its chunk's place,
+  a whole block of cells as one quad at a far stride.
+- `bun test tests/worldPaint.test.ts` and `go test ./internal/wow/ -run TilePaint`: a tile's paint
+  reply (`/wow/groundpaint`) reads back, and the painted tiles share palette entries.
+- `go test ./internal/vmangos/ -run Horizon`: the world's horizon has every WDL tile once at its own
+  coordinates, Northshire's as the region's horizon has it.
+- `bun test tests/instanceCull.test.ts`: the doodads' reach by size, across the ground, only for a
+  doodad batch in a view that asks for it.
+- `bun test tests/worldGround.test.ts`: the ground reply, the mesh (holes, normals, winding), the
+  height between samples, the strides (a coarse cell a hole only when all its cells are) and the
+  skirts on an edge that strays between them, the tiles wanted nearest first, the reach for the view distance, and a
+  model several tiles list placed once (`TileModelShare`).
+- `go test ./internal/wow/ -run TestTile`: a tile `adt.BuildTile` makes reads back as its
+  heights and holes, laid out as the frontend reads them, and as its models in the map's editor
+  coordinates and turn.
+- By hand: `curl "localhost:34115/wow/ground?map=Azeroth&x=32&y=48"` gives 100616 bytes; a tile the
+  map lacks is a 404. `/wow/groundmodels` with the same query lists the tile's models as JSON.
+- The client has a few models twice at one spot under two IDs (an Elwynn haystack, 18883 and 18884):
+  check that a model is placed once by its ID, not by its spot.
+- Trap: wait for `queued` as well as `loading` to reach 0. Between two reads `loading` is 0 for a
+  frame while tiles still wait, and a check then sees half the ring.

@@ -6,16 +6,34 @@ The window layout, the asset browser and the dock panels and floating windows.
   - Rows: `MenuBar`, `OptionsBar`, then the main row, then `StatusBar`.
   - Main row: `Toolbar` | centre column | `Dock`. The centre column is the `Viewport` (with the
     document tab) over the `AssetBrowser`, which has its own area along the bottom.
+  - Preferences › Toolbar on the left / on the right (`prefs.toolbarSide`, #654) moves the toolbar to
+    the window's right edge, after the dock. `App.svelte` swaps the `.main` grid's columns
+    (`.toolbar-right`); the DOM order stays, so the tab order and the probes don't change. The
+    toolbar's border and its hover description (#130) flip with it: the tip is placed by the
+    toolbar's left edge and translated by its own width.
   - Per-tool settings go in `OptionsBar` (use `OptSlider`). The bar is one row: its controls wrap
     and the rows below the first are clipped until its More (n) button opens the bar over the
     viewport (#254), so put a tool's most used controls first; the brush's Size and Strength
-    (`sizeStrength`) follow right after a tool's modes. It holds controls only: a sentence of
+    (`sizeStrength`) follow right after a tool's modes. Aim for a tool's controls to fit the row at 1400 px with
+    nothing under More (#715): the Sculpt bar does, with its twelve modes as icon buttons (`SCULPT_MODES`,
+    named by their tooltips and `aria-label`), narrower sliders, and a Brush button that opens a panel
+    under the bar (`.brushpanel`, outside the clipped `.options`) with the settings set once: edit
+    limit, image, falloff curve, shape, Flatten's target, direction and angled plane, Terrace's offset
+    and painting while sculpting (the button reads "Brush · Paint" while that is on). The Water, Doodad
+    and Paint bars fit the same way (#734): the panel is one for all four tools (`hasPanel`, its button
+    `.brushbtn` last on the bar, named by `panelLabel`: Water, Placement, Spawns, Mask or Brush), with
+    a branch per tool and mode; their Size, Strength and Falloff come from `sizeStrength` at
+    `sliderW` 70, and the falloff curve and shape move into the panel. A spawn brush with many
+    creatures still overflows under More. `OptSlider`'s
+    number box hides its spin arrows to stay 46 px wide. It holds controls only: a sentence of
     help for the tool goes in `ToolHint.svelte` (a branch per tool and mode, with `<kbd>` markup),
     which `StatusBar` shows in its message slot while `ui.status` is 'Ready'; a status message takes
     the slot for its few seconds. Labels that name a control (`Texture:`, `Selected:`) stay in the bar.
   - Contextual editing goes in dock panels (`DockPanel` wrapper: tabs + collapse). Dock width
     and collapsed panels are stored in `prefs`.
-  - Theme tokens are in `app.css` (neutral greys, blue `--accent`).
+  - Theme tokens are in `app.css` (neutral greys, blue `--accent`); status text is `--ok`, `--warn` and `--bad`, text on the accent fill `--accent-ink`, the dark 3D preview backgrounds `--preview-bg`, `--preview-glow` and `--preview-edge`, monospace `--mono` (#579).
+    A component's `<style>` holds no colour literal: `tests/contrast.test.ts` fails on one (its allow-list is the debug
+    overlay, SVG map strokes, game-coloured tooltips and overlays dark in both themes) and checks the status tokens on every panel.
   - **Saving bar** (`components/SavingBar.svelte`, #343): a box in the middle of the window that
     names the save running (`ui.saving`) over a moving stripe, with a publish's log line under it
     (`ui.savingDetail`). Every save goes through `lib/state/saving.ts`: `withSaving(label, fn)` around
@@ -56,18 +74,41 @@ The window layout, the asset browser and the dock panels and floating windows.
   - Categories and zones come from path keywords in `lib/wow/catalog.ts`; tune the regex rules
     there.
   - The grid is virtualised (only the rows in view are rendered), so there is no result cap.
+    Every tile grid (the asset and spawn browsers, the doodad brush editor, the display, look, icon
+    and weapon pickers) shares it (#578): `lib/ui/virtualGrid.ts` (`gridCols`, `gridWindow`, the
+    rows in view plus one each side, `rowTop`) and `components/VirtualGrid.svelte`, which renders
+    the window's items through a `cell` snippet. The scroller, its scroll position and resets stay
+    in each grid; the asset browser binds the block (`el`) to measure the Recent section above it.
     `AssetPreview.svelte` shows the hovered (else picked) item live in its own small renderer.
     It and `CreaturePreview` share `lib/ui/previewRenderer.ts` (#589): the renderer, its context
-    loss and release, the orbit camera with drag and wheel, and a frame loop that runs only while the
+    loss and release, the orbit camera with drag and wheel, a right or middle drag that moves the
+    orbit target up and down the model (#662: scaled by the distance, held to the bounds the view
+    sets with `setPanRange` when it fits a model), and a frame loop that runs only while the
     view's `step` says something moves (a spin, an animation, particles, a moving texture), wakes on
     input, a resize, a restored context or a shown page, and keeps to Graphics › FPS limit. The asset
     preview spins a newly shown model for 6 s and while the pointer is over it, then stops drawing.
   - `ui.palette` follows the tool (textures while painting) and the browser follows it. Its
     height, collapsed state, tile size and recent picks are `prefs`, and so are the tab
     (`browserKind`) and each tab's search, zone, category and scroll (`browserViews`, `wow/browserViews.ts`).
+    The Creatures and NPCs tabs (`SpawnBrowser.svelte`) also keep a sort there (#659: database order,
+    or by level with `byLevel`, lowest or highest first).
+  - The header is the same on every tab (#651): one search box (Ctrl+F, a per-tab placeholder), the
+    count and the tile-size slider. Beside the box the model tabs show the zone select and Creatures
+    and NPCs the sort; Objects and Prefabs show neither. The box writes the shown tab's
+    `browserViews` entry (Prefabs has one too); `SpawnBrowser` reads its query from there and
+    `PrefabBrowser` gets it as a prop, and both hand their result's length back through a bindable
+    `count`. Neither has a search box of its own, and their category facets stay in their panels.
+  - The **Names** checkbox in the header (`prefs.browserNames`, #655) shows or hides the name under
+    every browser tab's tiles (`PaletteTile`'s `showLabel`) and, in the asset preview, the whole details
+    block under the picture (name, kind, size and path; the Prefabs tab's name and contents too); the
+    rows' height (`rowH`) drops by the label's 22 px with it. The pickers and the brush editor always
+    show names. The size slider, the checkbox and the fold button sit in `.view-opts` at the header's
+    right end, 254 px wide so they stand over the 260 px preview column (owner's request). In a narrow
+    browser the search, the select and `.view-opts` shrink (to 60, 70 and 150 px) so the checkbox and
+    the fold button stay in view; the slider gives way first.
   - The **Sets** tab shows the author's model sets (`wow/modelSets.ts`, `prefs.modelSets`): named lists
     of doodads and buildings, made and filled through a tile's right-click menu (which also holds the
-    favourite star), and imported or exported as TOML (`importModelSets`/`exportModelSet` in `mapio.ts`).
+    favourite star), and imported or exported as TOML (`importModelSets`/`exportModelSet` in `io/lists.ts`).
   - The **Prefabs** tab (`PrefabBrowser.svelte`, #170) lists the TOML files of `prefs.prefabDir`
     (`wow/prefabs.ts`: model clips by path, `ListPrefabs` binding); Models › Save Selection as Prefab
     writes one, and a click places it as a model paste (`Engine.placeObjectClip`; R and Ctrl+scroll
@@ -77,12 +118,25 @@ The window layout, the asset browser and the dock panels and floating windows.
     renderer, which shares GPU textures. They are cached as PNG via the `SaveThumbnail` binding.
   - **Never send request bodies (POST) to the Wails asset server.** WebKitGTK segfaults reading
     them. Use bindings for uploads.
-- **Dock panels** (`components/Dock.svelte`): only Layers is shown, at the owner's request
+- **Dock panels** (`components/Dock.svelte`): Layers, and the Minimap above it while attached (#749); only Layers otherwise, at the owner's request
   (2026-10-15). What the dropped panels did lives elsewhere now: `PropertiesPanel` is shown by the
   floating **Inspector** (`components/Inspector.svelte`, `ui.inspector`, the I key, Esc closes it);
   growing a region and saving or exporting spawns are File menu actions (shown for a region), with
   the unsaved spawn count as a chip in the status bar; the region's facts are in Map Properties.
   `MinimapPanel` and `SpawnsPanel` were deleted (the owner wants no spawn list; #263).
+  The dock hides on its own (#653): `prefs.dockHidden`, set by the ✕ on its header (`DockPanel`'s
+  `onclose`) and toggled by View › Layers panel. `App.svelte` then leaves it out of `.main`, and
+  `.centre` keeps its pinned grid column, so the viewport takes the dock's width. Hiding drops a
+  pending Replace (`ui.replaceSlot`), whose Cancel is in the hidden panel. Tab's hide-panels works on
+  top of it.
+  - **Minimap** (#749): `MinimapView.svelte` is the map (canvas, overview, tile borders, light zones,
+    the camera's marker, click to jump), shown in one place at a time: as a dock panel above Layers
+    while `prefs.minimapDocked` (the default), or in the floating `MinimapWindow.svelte`. `ui.minimap`
+    (M, Camera › Minimap) shows it in either; `lib/ui/minimap.ts` holds the toggle, attach (⇥) and
+    detach (⇱), and shows a hidden dock when the minimap is attached. `DockPanel`'s `actions` snippet
+    puts the Light zones box and ⇱ on its header. The dock panel stays square at the dock's width, at
+    most 40 % of the window's height. In a world tab (#15) it shows the map's overview in tiles
+    instead of the stand-in's heights, with no light zones (terrain.md, the world view).
   - **History** (`components/HistoryWindow.svelte`, `ui.history`, Edit › History) is a floating window
     like the Inspector, not a dock panel: the active map's undo stack (`History.steps`), where a click
     calls `Engine.goToHistory` (undo or redo to that step). It re-reads the stack when
@@ -120,7 +174,10 @@ The window layout, the asset browser and the dock panels and floating windows.
     BLP at `Interface\Glues\LoadingScreens\LoadScreenMeld<Dir>.blp`, a LoadingScreens.dbc row of its
     own (found again by that path) and the map's Map.dbc field 38 when the client has the row, and the
     dialog chooses the row in `MapInfo` so a later publish keeps it. The preview draws the chosen
-    picture 4:3, as the game stretches its square pictures over the screen.
+    picture 4:3, as the game stretches its square pictures over the screen. Its tiles on the
+    client's 64×64 grid are a `TileGrid` too (#46, terrain.md's Start dialog): read from the map
+    after every undo step (`ui.historyVersion`), a change inside the square is `setWorldTiles`, one
+    past it `growWorld` after `askConfirm`.
     Put any new per-map setting in this dialog, not in a panel or the Graphics menu.
   - Alt+click is the pipette (`tools/PipetteTool.ts`): in Select and Place it picks the model
     under the cursor as the one to place, or the ground's texture; in Paint and Road, the texture.
@@ -132,6 +189,18 @@ The window layout, the asset browser and the dock panels and floating windows.
   it is the newest open dialog, Tab and Shift+Tab wrap at its ends; on close the focus goes back to
   what held it, or to the menu title when a menu item opened it. A new dialog root gets the action
   too. Modal is labelled by its `<h2>` (`aria-labelledby`, an id from `$props.id()`).
+  Esc belongs to the topmost dialog only (#573): each dialog's window keydown listener calls
+  `takeEscape(e, root)` (`lib/state/escape.ts`, `root` its `use:dialogFocus` element), which is
+  true once per event and false while another dialog is open above `root` (`topDialog()`, the
+  newest root on dialogFocus's stack), so a Modal over an editor (the weapon picker over the
+  creature editor) closes alone, whatever order the listeners mounted in. In a text field the first
+  Esc only leaves the field, in Modal as in the editors. A new dialog with its own Esc uses the same.
+- **Confirm prompts** (#581): never the native `confirm()` (unthemed, it blocks the render loop,
+  skips the focus return, and headless Chrome answers it no). `await askConfirm(text, { title, ok,
+  danger })` (`lib/state/confirm.ts`) sets `ui.confirm`, which AppDialogs draws as a Modal after
+  every other dialog, so it sits over the dialog or editor that asked; Cancel, Esc and a click
+  outside answer false. A dialog whose close asks (Zones, Portals, Lights) passes its async `close`
+  to `Modal onclose`, so Esc and the backdrop ask too.
 - **Menus from the keyboard** (#370): the menu bar (`MenuBar.svelte`, `role="menubar"`, titles with
   `aria-haspopup` and `aria-expanded`) and the right-click menu (`ContextMenu.svelte`) follow the
   WAI-ARIA menu pattern. Opening a menu (click, Enter, Space or Down on a title; Up opens on the last
@@ -142,3 +211,40 @@ The window layout, the asset browser and the dock panels and floating windows.
   map's hotkeys (App.svelte `onKeyDown`, on `window`) don't fire while a menu holds the focus. Keep
   each dropdown right after its title in the DOM: `dialogFocus` finds the title as the menu's
   previous sibling.
+- **Camera views** (#750): the Camera menu's radio group Orbit View (F2, the default), Flying View
+  (F3), Walking View (F4) and Top-down View (U), from `lib/ui/cameraView.ts`. A view has no state of
+  its own: it is read from `prefs.cameraFollowGround` (Orbit or Flying, so a saved value and an old
+  scene keep their meaning), `ui.walkCamera` and `ui.topDown`, and picking one sets the three
+  (`withView`). Walking keeps Follow the Ground for the camera the walk returns to (`setWalk`), and
+  Top-down keeps both, so U and F4 again go back to the view under them. T (`followGround`) switches
+  Orbit and Flying; while walking or top-down it changes only the camera that view returns to.
+- **Copy id** (#681): anything with an id has a right-click that copies it, as plain text, and its
+  name where it has one: spawns (entry and guid), area triggers and a region's models (their unique
+  ID; Copy path too) in the viewport, the asset tiles (Copy path), the creature and object tiles, and
+  the editors' search results, list rows and RefField names and hits. `lib/ui/copyId.ts` makes the
+  items (`copyItems`, labelled with what the id is: "Copy creature entry 448", via `idOf`), opens a
+  menu (`openIdMenu`) or wires a row (`use:idMenu`); a row with a menu of its own adds `copyItems`
+  to it. A list or script named by a summary of what it holds gets no Copy name (RefField `NAMED`).
+  `EditorFrame` leaves Esc to an open right-click menu.
+- **Shortcuts in one table** (#583): `lib/ui/commands.ts` lists every shortcut (id, group, text, and
+  the `chords` App binds). App.svelte `onKeyDown` asks `commandFor(e, early)` and runs the command
+  through `lib/ui/runCommand.ts`: the early chords (Ctrl, the function keys, Tab) before the engine
+  and the tool see the key, the rest after `handleSelectionKey`/`handleToolKey`, so a tool's own
+  letter (Paint's T) wins. A menu item takes its shortcut text and action with `cmd(id)` or
+  `toggle(id)` (`keysOf(id)` for a key the engine reads itself, such as Del or H), and Help ›
+  Keyboard Shortcuts lists `shortcutSections()`. A new shortcut is a row there plus its runner; a
+  menu never types a shortcut string (`tests/shortcuts.test.ts` fails on one). The tool keys come
+  from `TOOLS` (`lib/ui/tools.ts`).
+- **Rebinding** (#396, Preferences › Hotkey Manager, `components/HotkeyManager.svelte`): the table's
+  `chords` (commands, matched on `e.key`) and `codes` (the camera's movement rows, `camForward`…,
+  matched on `e.code` as CameraController always did) are the defaults; the `keymap` pref holds only
+  the rows the user changed (row id → chord texts such as `ctrl+shift+z`, or key codes; an empty list
+  is a row with no key; an entry that doesn't parse keeps the default). App calls
+  `bindKeymap(() => prefs.keymap)`, and every reader (`commandFor`, `keysOf`, `firstKeyOf`,
+  `CAMERA_KEYS`) goes through the effective keys rebuilt when the pref is *replaced*: never edit it in
+  place. Read inside a `$derived` (the menus, the Shortcuts dialog, the toolbar), `keysOf` follows the
+  pref; `$effect(syncKeymap)` in App refills `CAMERA_KEYS` at once. `assignBinding` takes a key off
+  every other row with the same press (a camera code clashes with the plain letter it types);
+  `refusal` keeps out modifiers, F5/F8/F12 and the plain keys the engine reads (Esc, Enter, Del,
+  arrows, PgUp/PgDn); `fixedClash` warns of H, R, T and Z, which the selection or a tool read first.
+  The rows without chords or codes (Del, H, R, arrows, Esc, Paint's T, the mouse) stay fixed.

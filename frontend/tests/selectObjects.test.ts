@@ -1,10 +1,8 @@
-import { expect, mock, test } from 'bun:test'
+import './runes.ts'
+import { expect, test } from 'bun:test'
 import type { ObjectLayer } from '../src/lib/world/ObjectLayer'
-
-// editor.svelte.ts needs the Svelte compiler for its runes, so the test stands in a plain object.
-const editor: { selectedIds: number[]; selected: { id: number } | null } = { selectedIds: [], selected: null }
-mock.module('../src/lib/state/editor.svelte.ts', () => ({ editor }))
-const { selectObjects } = await import('../src/lib/state/selection')
+import { editor } from '../src/lib/state/editor.svelte.ts'
+import { selectObjects } from '../src/lib/state/selection'
 
 function layer(n: number): ObjectLayer {
 	const objects = new Map<number, { id: number }>()
@@ -34,4 +32,12 @@ test('selectObjects is linear in the selection size', () => {
 	selectObjects(l, ids)
 	expect(editor.selectedIds.length).toBe(200000)
 	expect(performance.now() - t).toBeLessThan(1000)
+})
+
+test("selectObjects selects nothing in a look-only layer (a world view's streamed models, #15)", () => {
+	const l = layer(5)
+	l.lookOnly = true
+	selectObjects(l, [1, 2, 3], 2)
+	expect(editor.selectedIds.length).toBe(0)
+	expect(editor.selected).toBeNull()
 })

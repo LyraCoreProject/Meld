@@ -38,22 +38,25 @@ type TileSpec struct {
 	Objects []ObjectSpec
 	// Liquids are the tile's painted liquid layers, each placed by its chunk in the tile.
 	Liquids []adt.Liquid
-	// Headers are the chunks' zones and impassable flags; chunks not listed keep the new tile's.
+	// Headers are the chunks' zones, impassable flags, holes and baked shadows; chunks not listed keep the new tile's.
 	Headers []HeaderSpec
 }
 
 // HeaderSpec is a chunk's header fields: its index (in the tile for a TileSpec, in the block for a
-// RegionEdit), its AreaTable.dbc ID (0 keeps the chunk's own) and whether it is impassable.
+// RegionEdit), its AreaTable.dbc ID (0 keeps the chunk's own) and whether it is impassable (nil keeps
+// the chunk's own: a map without chunk data of its own still sends its holes and shadows, #644).
 // NoEffect, one entry per cell row with a bit per cell, replaces the chunk's noEffectDoodad bits;
 // empty keeps them (with a PaintSpec's added). Holes, in the same form, replaces the chunk's holes,
-// each 2x2-cell block a hole when any of its cells is; empty keeps them. Shadow (base64 in JSON),
+// each 2x2-cell block a hole when any of its cells is; empty keeps them. HolesAdd adds them to the
+// chunk's own instead, for a map that doesn't know the client's holes (#663). Shadow (base64 in JSON),
 // adt.ShadowBytes long, replaces the chunk's baked shadow map; empty keeps it.
 type HeaderSpec struct {
 	Chunk      int    `json:"chunk"`
 	AreaID     uint32 `json:"areaId"`
-	Impassable bool   `json:"impassable"`
+	Impassable *bool  `json:"impassable,omitempty"`
 	NoEffect   []int  `json:"noEffect,omitempty"`
 	Holes      []int  `json:"holes,omitempty"`
+	HolesAdd   bool   `json:"holesAdd,omitempty"`
 	Shadow     []byte `json:"shadow,omitempty"`
 }
 
@@ -73,6 +76,7 @@ func (h HeaderSpec) chunkHeader() adt.ChunkHeader {
 		}
 		bits := adt.HoleBits(rows)
 		ch.Holes = &bits
+		ch.HolesAdd = h.HolesAdd
 	}
 	if len(h.Shadow) == adt.ShadowBytes {
 		ch.Shadow = h.Shadow
@@ -109,8 +113,9 @@ type MapSpec struct {
 	// Info, when set, is written into the map's Map.dbc row and the server's map_template; without it
 	// a new row is a world map like the continents.
 	Info *MapInfo
-	// Global, when set, makes a WMO-only map: the WDT places this building (X and Z in yards from the
-	// map's corner, as a tile 0,0 object) and the map has no tiles, as the client's Blackfathom Deeps.
+	// Global, when set, makes a WMO-only map: the WDT places this building and the map has no tiles,
+	// as the client's Blackfathom Deeps. Its X and Z are left out: the building goes at the world's
+	// middle, where the client and the server's vmaps both put a WDT's building at 0 (#272).
 	Global *ObjectSpec
 }
 
@@ -228,7 +233,7 @@ func ExportMap(readDir, patchDir, serverDir string, m MapSpec) (ExportResult, er
 		if m.Water {
 			water = &adt.Water{Level: m.WaterLevel}
 		}
-		data, err := buildTile(t, adds[i], water)
+		data, err := buildTile(t, tileRing(m.Tiles, index, t), adds[i], water)
 		if err != nil {
 			return res, fmt.Errorf("tile %d,%d: %w", t.X, t.Y, err)
 		}
@@ -251,6 +256,9 @@ func ExportMap(readDir, patchDir, serverDir string, m MapSpec) (ExportResult, er
 		if obj.Kind != adt.WMO {
 			return res, errors.New("a WMO-only map's building must be a WMO")
 		}
+		// At the world's middle, as every client dungeon has it (wmoonly.go): X and Z 0 in the WDT's
+		// frame, with the bounds round it in the same frame. Its height and turn are kept.
+		obj.Position[0], obj.Position[2] = 0, 0
 		rc.bound(&obj)
 		wdt, err := BuildWMOOnlyWDT(wdtTemplate, GlobalWMO{Name: obj.Name, Position: obj.Position, Rotation: obj.Rotation, Min: obj.Min, Max: obj.Max, DoodadSet: obj.DoodadSet})
 		if err != nil {
@@ -323,9 +331,31 @@ func tileFloor(v float32) int {
 	return int(math.Floor(float64(v) / adt.TileSize))
 }
 
-// buildTile writes one tile: its ground and paint from t, and the models it lists (objs, already
-// numbered and bounded, which may include ones placed in a neighbour that reach into it).
-func buildTile(t TileSpec, objs []adt.Object, water *adt.Water) ([]byte, error) {
+// tileRing is the heights just across t's border from the map's other tiles (index finds them by
+// position), so the normals there match theirs (#492). A side without a tile stays one-sided.
+func tileRing(tiles []TileSpec, index map[[2]int]int, t TileSpec) adt.Ring {
+	var ring adt.Ring
+	for _, s := range []struct {
+		side   string
+		dx, dy int
+		line   *[]float32
+	}{
+		{"north", 0, -1, &ring.North},
+		{"south", 0, 1, &ring.South},
+		{"west", -1, 0, &ring.West},
+		{"east", 1, 0, &ring.East},
+	} {
+		if k, ok := index[[2]int{t.X + s.dx, t.Y + s.dy}]; ok && len(tiles[k].Outer) == LatticeSize*LatticeSize {
+			*s.line = ringOf(tiles[k].Outer, s.side)
+		}
+	}
+	return ring
+}
+
+// buildTile writes one tile: its ground and paint from t, the ring of heights around it from its
+// neighbours (tileRing), and the models it lists (objs, already numbered and bounded, which may include
+// ones placed in a neighbour that reach into it).
+func buildTile(t TileSpec, ring adt.Ring, objs []adt.Object, water *adt.Water) ([]byte, error) {
 	ch := adt.Changes{TileX: t.X, TileY: t.Y, Paint: map[int]adt.ChunkPaint{}, Water: water, Add: objs}
 	liquids, err := liquidsByChunk(t.Liquids, adt.ChunksPerTile)
 	if err != nil {
@@ -361,7 +391,7 @@ func buildTile(t TileSpec, objs []adt.Object, water *adt.Water) ([]byte, error) 
 		}
 		ch.Paint[p.Chunk] = chunkPaint(p.Textures, p.Effects, p.Flags, p.NoEffect, weights, perSide)
 	}
-	return adt.BuildTile(t.Outer, ch)
+	return adt.BuildTile(t.Outer, ring, ch)
 }
 
 // liquidsByChunk groups liquid layers by their chunk's index, in a grid of perRow chunks a side,

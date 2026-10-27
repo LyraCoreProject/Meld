@@ -1,22 +1,21 @@
 <script lang="ts">
-	import { startSaving } from '../lib/state/saving'
-  import { dialogFocus } from '../lib/ui/dialogFocus'
-	import { CreateItem, CreateItemOfKind, ExportItems, ImportItems, ItemDisplayVariant, ItemModelLook, ListItemKinds, OpenItemsDialog, PlanItemImport, ReadItemTemplate, SaveItem, SearchItems } from '../../wailsjs/go/main/App'
+	import { copyItems } from '../lib/ui/copyId'
+	import { CreateItem, CreateItemOfKind, ExportItems, ImportItems, ItemDisplayVariant, ItemModelLook, ListItemKinds, OpenItemsDialog, PlanItemImport, ReadItemTemplate, SaveItem, SearchItemsSorted } from '../../wailsjs/go/main/App'
 	import type { vmangos } from '../../wailsjs/go/models'
-	import { ClipboardSetText } from '../../wailsjs/runtime/runtime'
-	import { hasBackend } from '../lib/io/mapio'
-	import { setStatus, ui } from '../lib/state/editor.svelte'
-	import { changedValues } from '../lib/world/creatureFields'
+	import { prefs, setStatus, ui } from '../lib/state/editor.svelte'
+	import { askImport as planImport, copyCommand as copyGmCommand, exportRow, runImport } from '../lib/ui/templateIo'
+	import { TemplateEditor, checkRefused, tabChangeCounts } from '../lib/ui/templateEditor.svelte'
 	import { HELD_TYPES, INVENTORY_TYPES, ITEM_CLASSES, itemTabs, SHOOTS_LIKE, slotKind, subclassOptions } from '../lib/world/itemFields'
 	import { tabOfColumn } from '../lib/world/questFields'
 	import { forgetItemIcons, forgetItemRow, itemTooltipNames } from '../lib/wow/items'
-	import { QUALITY_COLORS, tooltipLines, type TooltipNames } from '../lib/wow/itemTooltip'
+	import { QUALITY_VARS, tooltipLines, type TooltipNames } from '../lib/wow/itemTooltip'
 	import { forgetName } from '../lib/wow/refNames'
 	import CreaturePreview from './CreaturePreview.svelte'
 	import EquipBonuses from './EquipBonuses.svelte'
 	import ItemIcon from './ItemIcon.svelte'
 	import ItemLookPicker, { forgetLooks, loadItemDisplays } from './ItemLookPicker.svelte'
 	import ItemTooltipBox from './ItemTooltipBox.svelte'
+	import EditorFrame from './EditorFrame.svelte'
 	import TemplateFields from './TemplateFields.svelte'
 
 	// The item editor (#353, Tools › Items…): find an item or make one (blank, or a copy of the open
@@ -30,14 +29,6 @@
 	const target = $derived(ui.itemEditor)
 
 	let tab = $state('item')
-	let record = $state<vmangos.TemplateRecord | null>(null)
-	let values = $state<Record<string, string>>({})
-	let saved = $state<Record<string, string>>({})
-	let error = $state('')
-	let note = $state('')
-	let loading = $state(false)
-	let saving = $state(false)
-	let confirmClose = $state(false)
 	// The look: a display picked from the client's (a click; the one under the pointer is previewed),
 	// or an icon for the item's model, which Save turns into a display.
 	let pendingIcon = $state('')
@@ -48,96 +39,48 @@
 	let candidate = $state<number | string | null>(null)
 	let hoverPick = $state<number | string | null>(null)
 
-	const changes = $derived(changedValues(values, saved))
-	const changeCount = $derived(Object.keys(changes).length)
+	const ed = new TemplateEditor<{ entry: number }, vmangos.TemplateRecord>({
+		id: (t) => String(t.entry),
+		entry: (t) => t.entry,
+		read: ReadItemTemplate,
+		clear: () => (ui.itemEditor = null),
+		dirty: () => lookChanges > 0,
+		onopen: () => {
+			pendingIcon = ''
+			pendingVisual = -1
+			changing = ''
+		},
+		onrevert: () => {
+			pendingIcon = ''
+			pendingVisual = -1
+		},
+		onclose: () => (plan = null),
+	})
+	ed.follow(() => target)
+	const record = $derived(ed.record)
+	const values = $derived(ed.values)
+	const saved = $derived(ed.saved)
+	const changes = $derived(ed.changes)
+	const changeCount = $derived(ed.changeCount)
 	/** The look's changes waiting for Save, made into a display then: a picked icon, a shot visual. */
 	const lookChanges = $derived((pendingIcon ? 1 : 0) + (pendingVisual >= 0 ? 1 : 0))
-	const unsaved = $derived(changeCount > 0 || lookChanges > 0)
-	const tabs = $derived(record ? itemTabs(record.columns.map((c) => c.name), Number(values.class) || 0) : [])
+	const unsaved = $derived(ed.unsaved)
+	const tabs = $derived(
+		record
+			? itemTabs(
+					record.columns.map((c) => c.name),
+					Number(values.class) || 0,
+				)
+			: [],
+	)
 	const columnKind = $derived(new Map((record?.columns ?? []).map((c) => [c.name, c])))
 	/** How many changes each tab holds, for its label. */
-	const tabChanges = $derived(new Map(tabs.map((t) => [t.id, t.groups.reduce((n, g) => n + g.fields.filter((f) => changes[f.col] !== undefined).length, 0)])))
-
-	// Opening another item reads it.
-	let loadedFor = 0
-	$effect(() => {
-		const t = target
-		if (!t) {
-			loadedFor = 0
-			return
-		}
-		if (t.entry === loadedFor) return
-		loadedFor = t.entry
-		record = null
-		values = {}
-		saved = {}
-		pendingIcon = ''
-		pendingVisual = -1
-		changing = ''
-		error = ''
-		confirmClose = false
-		if (t.entry > 0) void load(t.entry)
-	})
-
-	async function load(entry: number) {
-		loading = true
-		try {
-			const r = await ReadItemTemplate(entry)
-			if (ui.itemEditor?.entry !== entry) return
-			record = r
-			values = { ...r.values }
-			saved = { ...r.values }
-		} catch (err) {
-			error = String(err)
-		} finally {
-			loading = false
-		}
-	}
-
-	/** What to do once unsaved changes are discarded: close, unless something else asked first. */
-	let afterDiscard: (() => void) | null = null
-
-	/** Runs `go` now, or once the unsaved changes are kept or discarded. */
-	function leave(go: () => void) {
-		if (!unsaved) {
-			go()
-			return
-		}
-		afterDiscard = go
-		confirmClose = true
-	}
-
-	function close(force = false) {
-		if (unsaved && !force) {
-			afterDiscard = null
-			confirmClose = true
-			return
-		}
-		ui.itemEditor = null
-		loadedFor = 0
-		note = ''
-		plan = null
-	}
-
-	function discard() {
-		revert()
-		confirmClose = false
-		const then = afterDiscard
-		afterDiscard = null
-		if (then) then()
-		else close(true)
-	}
-
-	function revert() {
-		values = { ...saved }
-		pendingIcon = ''
-		pendingVisual = -1
-	}
+	const tabChanges = $derived(tabChangeCounts(tabs, changes))
 
 	function open(entry: number) {
 		if (target?.entry === entry) return
-		leave(() => {
-			note = ''
+		ed.leave(() => {
+			ed.note = ''
 			ui.itemEditor = { entry }
 		})
 	}
@@ -153,43 +96,36 @@
 
 	const RESTART = 'Restart the world server for the server to use it; the game asks for the item again when it starts from Meld.'
 
-	async function save() {
-		if (!record || !unsaved) return
-		saving = true
-		const end = startSaving('Saving the item')
-		error = ''
-		note = ''
-		try {
-			// A picked icon first becomes a display: the client's that pairs it with the model, or a new one in Meld's patch.
-			let added = ''
-			if (lookChanges) {
-				const d = await ItemDisplayVariant(display, pendingIcon, pendingVisual)
-				if (d.added) {
-					forgetItemIcons()
-					const what = [pendingIcon, pendingVisual >= 0 ? `shooting like ${SHOOTS_LIKE[subclass] ?? 'its weapon'}` : ''].filter(Boolean).join(', ')
-					added = ` Added display ${d.id} (its model with ${what}) to the client's patch.`
+	function save() {
+		const r = record
+		if (!r || !unsaved) return
+		void ed.save(
+			'Saving the item',
+			async () => {
+				// A picked icon first becomes a display: the client's that pairs it with the model, or a new one in Meld's patch.
+				let added = ''
+				if (lookChanges) {
+					const d = await ItemDisplayVariant(display, pendingIcon, pendingVisual)
+					if (d.added) {
+						forgetItemIcons()
+						const what = [pendingIcon, pendingVisual >= 0 ? `shooting like ${SHOOTS_LIKE[subclass] ?? 'its weapon'}` : ''].filter(Boolean).join(', ')
+						added = ` Added display ${d.id} (its model with ${what}) to the client's patch.`
+					}
+					values.display_id = String(d.id)
+					pendingIcon = ''
+					pendingVisual = -1
 				}
-				values.display_id = String(d.id)
-				pendingIcon = ''
-				pendingVisual = -1
-			}
-			const n = changeCount
-			if (n > 0) await SaveItem(record.entry, record.patch, changes)
-			saved = { ...values }
-			forgetItems([record.entry])
-			forgetLooks()
-			note = `Saved ${n} ${n === 1 ? 'value' : 'values'} of ${values.name} (item ${record.entry}) to the world database.${added} ${RESTART}`
-			setStatus(note, 10000)
-		} catch (err) {
-			error = String(err)
+				const n = changeCount
+				if (n > 0) checkRefused(await SaveItem(r.entry, r.patch, ed.changes))
+				ed.markSaved()
+				forgetItems([r.entry])
+				forgetLooks()
+				ed.note = `Saved ${n} ${n === 1 ? 'value' : 'values'} of ${values.name} (item ${r.entry}) to the world database.${added} ${RESTART}`
+				setStatus(ed.note, 10000)
+			},
 			// A refused value: show the tab it is on.
-			const col = error.replace(/^Error:\s*/, '').split(/\s/)[0]
-			const t = tabOfColumn(tabs, col)
-			if (t) tab = t
-		} finally {
-			saving = false
-			end()
-		}
+			(col) => (tab = tabOfColumn(tabs, col) ?? tab),
+		)
 	}
 
 	// Find: items by name or entry.
@@ -198,8 +134,20 @@
 	let searching = $state(false)
 	let searchVersion = $state(0)
 	let timer = 0
+	/** The search's orders (#677), done in SQL before its limit of 100, so a broad search gives the highest items, not the first by name. */
+	const SORTS: [string, string][] = [
+		['name', 'Name'],
+		['entry', 'Entry'],
+		['quality', 'Quality'],
+		['itemLevel', 'Item level'],
+		['requiredLevel', 'Required level'],
+	]
+	/** The number a result shows on the right: its entry, or the level it is sorted by. */
+	const sideNumber = (i: vmangos.ItemRef) => (prefs.itemSort === 'itemLevel' ? `ilvl ${i.itemLevel ?? 0}` : prefs.itemSort === 'requiredLevel' ? `lvl ${i.requiredLevel ?? 0}` : String(i.entry))
 	$effect(() => {
 		const q = query.trim()
+		const sort = prefs.itemSort
+		const desc = prefs.itemSortDesc
 		void searchVersion
 		clearTimeout(timer)
 		if (!q) {
@@ -209,10 +157,10 @@
 		timer = window.setTimeout(async () => {
 			searching = true
 			try {
-				const r = await SearchItems(q)
-				if (q === query.trim()) found = r ?? []
+				const r = await SearchItemsSorted(q, sort, desc)
+				if (q === query.trim() && sort === prefs.itemSort && desc === prefs.itemSortDesc) found = r ?? []
 			} catch (err) {
-				error = String(err)
+				ed.error = String(err)
 			} finally {
 				searching = false
 			}
@@ -246,7 +194,7 @@
 
 	function startNew() {
 		if (isNew) return
-		leave(() => {
+		ed.leave(() => {
 			copySource = record ? { entry: record.entry, name: saved.name ?? '', kind: `${saved.class}|${saved.subclass}|${saved.inventory_type}` } : null
 			startFrom = 'kind'
 			// The kind of the item that was open, when the database has it.
@@ -255,19 +203,23 @@
 				kindClass = c
 				kindKey = `${sub}|${inv}`
 			}
-			note = ''
+			ed.note = ''
 			ui.itemEditor = { entry: -1 }
 		})
 	}
 	$effect(() => {
-		if (isNew && !kinds.length) ListItemKinds().then((k) => (kinds = k ?? []), (err) => (error = String(err)))
+		if (isNew && !kinds.length)
+			ListItemKinds().then(
+				(k) => (kinds = k ?? []),
+				(err) => (ed.error = String(err)),
+			)
 	})
 
 	async function create() {
 		const name = newName.trim()
 		if (!name) return
 		creating = true
-		error = ''
+		ed.error = ''
 		try {
 			let entry: number
 			let made: string
@@ -283,28 +235,18 @@
 			searchVersion++
 			ui.itemEditor = { entry }
 			tab = 'item'
-			note = `Made item ${entry}, ${name}${made}`
-			setStatus(note, 8000)
+			ed.note = `Made item ${entry}, ${name}${made}`
+			setStatus(ed.note, 8000)
 		} catch (err) {
-			error = String(err)
+			ed.error = String(err)
 		} finally {
 			creating = false
 		}
 	}
 
 	// Export and import: SQL scripts of item_template rows.
-	async function exportItem() {
-		if (!record) return
-		error = ''
-		try {
-			const file = (saved.name || `item-${record.entry}`).replace(/[^\w\- ]+/g, '').trim() || `item-${record.entry}`
-			const path = await ExportItems([record.entry], file)
-			if (!path) return
-			note = `Exported ${saved.name} (item ${record.entry}) to ${path}${unsaved ? ', as saved: the unsaved changes are not in it' : ''}.`
-			setStatus(note, 8000)
-		} catch (err) {
-			error = String(err)
-		}
+	function exportItem() {
+		if (record) void exportRow(ed, { kind: 'item', entry: record.entry, name: saved.name, unsaved, write: ExportItems })
 	}
 
 	/** An import being confirmed: the script's path and what it writes. */
@@ -312,40 +254,23 @@
 	let importing = $state(false)
 
 	function askImport() {
-		leave(async () => {
-			error = ''
-			note = ''
-			try {
-				const path = await OpenItemsDialog()
-				if (!path) return
-				plan = { path, plan: await PlanItemImport(path) }
-			} catch (err) {
-				error = String(err)
-			}
-		})
+		planImport(ed, { pick: OpenItemsDialog, plan: PlanItemImport, set: (p) => (plan = p) })
 	}
 
-	async function confirmImport() {
+	function confirmImport() {
 		if (!plan) return
-		importing = true
-		error = ''
-		try {
-			const entries = (await ImportItems(plan.path)) ?? []
-			const n = plan.plan.items.length
-			plan = null
-			forgetItems(entries)
-			// The open item is read again when the import wrote it.
-			if (target && entries.includes(target.entry)) {
-				loadedFor = 0
-				ui.itemEditor = { entry: target.entry }
-			} else if (entries.length) ui.itemEditor = { entry: entries[0] }
-			note = `Imported ${n} item ${n === 1 ? 'row' : 'rows'} into the world database. ${RESTART}`
-			setStatus(note, 10000)
-		} catch (err) {
-			error = String(err)
-		} finally {
-			importing = false
-		}
+		const { path, plan: p } = plan
+		const n = p.items.length
+		void runImport(ed, {
+			run: () => ImportItems(path),
+			clear: () => (plan = null),
+			forget: forgetItems,
+			open: target?.entry,
+			openEntry: (entry) => (ui.itemEditor = { entry }),
+			note: () => `Imported ${n} item ${n === 1 ? 'row' : 'rows'} into the world database. ${RESTART}`,
+			status: 10000,
+			busy: (b) => (importing = b),
+		})
 	}
 
 	// The preview: the item on a character of the chosen race and sex, or alone.
@@ -369,7 +294,11 @@
 	// The client's looks, for what the item's own shoots like.
 	let displayList = $state<vmangos.ItemDisplayEntry[]>([])
 	$effect(() => {
-		if (subclass >= 0 && !displayList.length) void loadItemDisplays().then((d) => (displayList = d), () => {})
+		if (subclass >= 0 && !displayList.length)
+			void loadItemDisplays().then(
+				(d) => (displayList = d),
+				() => {},
+			)
 	})
 	const lookInfo = $derived(displayList.find((d) => d.id === display))
 	/** The look fires like another weapon than the item is, and no shot visual is waiting for Save. */
@@ -393,7 +322,7 @@
 		}
 		ItemModelLook(shown, invType, race, sex)
 			.then((l) => key === `${shown}|${invType}|${race}|${sex}` && (look = l))
-			.catch((err) => (error = String(err)))
+			.catch((err) => (ed.error = String(err)))
 	})
 	/**
 	 * Slots whose armour the game paints onto the body (shirt, chest, waist, legs, feet, wrists, hands,
@@ -428,8 +357,7 @@
 		const raceName = RACES.find(([r]) => r === race)?.[1] ?? ''
 		if (look.shown && !alone) return `${HELD_TYPES.has(invType) ? 'Held' : 'Worn'} ${where}, on ${/^[AEIOU]/.test(raceName) ? 'an' : 'a'} ${raceName} ${sex ? 'woman' : 'man'}.`
 		if (look.item) return 'The model alone, as the game draws it held or worn.'
-		if (BODY_TYPES.has(invType))
-			return alone ? 'It has no model of its own: the game paints it onto the character, shown On a character.' : 'Its display has nothing the game would paint on this slot: only its icon and tooltip.'
+		if (BODY_TYPES.has(invType)) return alone ? 'It has no model of its own: the game paints it onto the character, shown On a character.' : 'Its display has nothing the game would paint on this slot: only its icon and tooltip.'
 		if (where) return 'Its display has no model the game would show.'
 		if (invType > 0) return "The game doesn't show it on a character: only its icon and tooltip."
 		return 'It has no model of its own: in the game it is only its icon.'
@@ -437,9 +365,7 @@
 
 	// The tooltip follows the unsaved values; the names it shows are read again when the numbers they come from change.
 	let names = $state<TooltipNames>({})
-	const namesKey = $derived(
-		[1, 2, 3, 4, 5].map((i) => values[`spellid_${i}`] ?? '').join(',') + `|${values.required_skill}|${values.required_spell}|${values.required_reputation_faction}`,
-	)
+	const namesKey = $derived([1, 2, 3, 4, 5].map((i) => values[`spellid_${i}`] ?? '').join(',') + `|${values.required_skill}|${values.required_spell}|${values.required_reputation_faction}`)
 	$effect(() => {
 		const key = namesKey
 		if (!record) return
@@ -499,17 +425,9 @@
 	/** The GM command that gives an item: `.additem` puts it in the bags of the player selected, or your own. */
 	const addItemCommand = (entry: number) => `.additem ${entry}`
 
-	async function copyCommand(i: vmangos.ItemRef) {
+	function copyItemCommand(i: vmangos.ItemRef) {
 		const command = addItemCommand(i.entry)
-		error = ''
-		try {
-			if (hasBackend()) await ClipboardSetText(command)
-			else await navigator.clipboard.writeText(command)
-			note = `Copied ${command}: paste it in the game's chat as a GM to get ${i.name || `item ${i.entry}`} (or give it to the player you have selected). A new or changed item needs the world server restarted first.`
-			setStatus(`Copied ${command}.`, 6000)
-		} catch (err) {
-			error = `Copying the command failed: ${err}`
-		}
+		return copyGmCommand(ed, command, `paste it in the game's chat as a GM to get ${i.name || `item ${i.entry}`} (or give it to the player you have selected). A new or changed item needs the world server restarted first.`)
 	}
 
 	/** A search result's right-click menu: open it, or copy the command that gives it in the game. */
@@ -521,94 +439,85 @@
 			title: i.name || `Item ${i.entry}`,
 			items: [
 				{ label: 'Open', run: () => open(i.entry) },
-				{ label: `Copy ${addItemCommand(i.entry)} to the clipboard`, run: () => void copyCommand(i) },
+				{ label: `Copy ${addItemCommand(i.entry)} to the clipboard`, run: () => void copyItemCommand(i) },
+				{ separator: true },
+				...copyItems({ ids: [{ what: 'item entry', id: i.entry }, ...(i.displayId > 0 ? [{ what: 'display id', id: i.displayId }] : [])], name: i.name }),
 			],
 		}
 	}
 
-	function onKey(e: KeyboardEvent) {
-		// The right-click menu over the editor takes its own Esc.
-		if (!target || e.key !== 'Escape' || ui.contextMenu) return
-		const el = e.target as HTMLElement | null
-		if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA')) {
-			el.blur()
-			return
-		}
-		e.preventDefault()
+	/** Esc closes Change look or icon, then the import's confirmation, before the editor's own. */
+	function back(): boolean {
 		if (changing) endChange()
 		else if (plan) plan = null
-		else if (confirmClose && unsaved) confirmClose = false
-		else close()
+		else return false
+		return true
 	}
 </script>
 
-<svelte:window onkeydown={onKey} />
-
 {#if target}
-	<div class="editor" role="dialog" aria-modal="true" aria-label="Item editor" use:dialogFocus>
-		<header>
-			<div class="title">
-				{#if target.entry > 0}
-					<h2 style:color={QUALITY_COLORS[Number(values.quality)] ?? undefined}>{values.name || saved.name || 'Item'}</h2>
-					<span class="dim">item {target.entry}{record ? ` · patch ${record.patch}` : ''}</span>
-				{:else if target.entry === -1}
-					<h2>New item</h2>
-				{:else}
-					<h2>Items</h2>
-					<span class="dim">Find an item to edit, or make a new one.</span>
-				{/if}
-			</div>
-			<div class="actions">
-				<button onclick={askImport} title="Read items from an SQL script into the world database">Import…</button>
-				{#if record}
-					<button onclick={exportItem} title="Write this item to an SQL script">Export…</button>
-					<button disabled={!unsaved || saving} onclick={revert}>Revert</button>
-					<button class="active" disabled={!unsaved || saving} onclick={save}>
-						{saving ? 'Saving…' : unsaved ? `Save item (${changeCount + lookChanges})` : 'Saved'}
-					</button>
-				{/if}
-				<button onclick={() => close()} title="Close (Esc)">Close</button>
-			</div>
-		</header>
-		{#if plan}
-			<div class="bar warn plan">
-				<div class="what">
-					<strong>Import {plan.plan.items.length} item {plan.plan.items.length === 1 ? 'row' : 'rows'} into the world database?</strong>
-					<span>
-						{plan.plan.items
-							.slice(0, 12)
-							.map((i) => `${i.name || 'item'} (${i.entry}${i.patch ? `, patch ${i.patch}` : ''}${i.exists ? ', replaces it' : ', new'})`)
-							.join('; ')}{plan.plan.items.length > 12 ? `; and ${plan.plan.items.length - 12} more` : ''}.
-					</span>
-					{#if plan.plan.skipped}<span>{plan.plan.skipped} other {plan.plan.skipped === 1 ? 'statement is' : 'statements are'} left out: only item_template rows are imported.</span>{/if}
-					{#if plan.plan.unknown?.length}<span>Columns this server's item_template lacks are left out: {plan.plan.unknown.join(', ')}.</span>{/if}
-					<span>A replaced item can't be brought back, unless you exported it first.</span>
+	<EditorFrame {ed} label="Item editor" z={165} unsavedText={`${changeCount + lookChanges} unsaved ${changeCount + lookChanges === 1 ? 'change' : 'changes'} to the item.`} blocked={() => !!ui.contextMenu} {back}>
+		{#snippet title()}
+			{#if target.entry > 0}
+				<h2 style:color={QUALITY_VARS[Number(values.quality)] ?? undefined}><ItemIcon displayId={iconShown ? 0 : display} icon={iconShown} size={20} /> {values.name || saved.name || 'Item'}</h2>
+				<span class="dim">item {target.entry}{record ? ` · patch ${record.patch}` : ''}</span>
+			{:else if target.entry === -1}
+				<h2>New item</h2>
+			{:else}
+				<h2>Items</h2>
+				<span class="dim">Find an item to edit, or make a new one.</span>
+			{/if}
+		{/snippet}
+		{#snippet actions()}
+			<button onclick={askImport} title="Read items from an SQL script into the world database">Import…</button>
+			{#if record}
+				<button onclick={exportItem} title="Write this item to an SQL script">Export…</button>
+				<button disabled={!unsaved || ed.saving} onclick={() => ed.revert()}>Revert</button>
+				<button class="active" disabled={!unsaved || ed.saving} onclick={save}>
+					{ed.saving ? 'Saving…' : unsaved ? `Save item (${changeCount + lookChanges})` : 'Saved'}
+				</button>
+			{/if}
+		{/snippet}
+		{#snippet bars()}
+			{#if plan}
+				<div class="bar warn plan">
+					<div class="what">
+						<strong>Import {plan.plan.items.length} item {plan.plan.items.length === 1 ? 'row' : 'rows'} into the world database?</strong>
+						<span>
+							{plan.plan.items
+								.slice(0, 12)
+								.map((i) => `${i.name || 'item'} (${i.entry}${i.patch ? `, patch ${i.patch}` : ''}${i.exists ? ', replaces it' : ', new'})`)
+								.join('; ')}{plan.plan.items.length > 12 ? `; and ${plan.plan.items.length - 12} more` : ''}.
+						</span>
+						{#if plan.plan.skipped}<span>{plan.plan.skipped} other {plan.plan.skipped === 1 ? 'statement is' : 'statements are'} left out: only item_template rows are imported.</span>{/if}
+						{#if plan.plan.unknown?.length}<span>Columns this server's item_template lacks are left out: {plan.plan.unknown.join(', ')}.</span>{/if}
+						<span>A replaced item can't be brought back, unless you exported it first.</span>
+					</div>
+					<button onclick={() => (plan = null)}>Cancel</button>
+					<button class="active" disabled={importing} onclick={confirmImport}>{importing ? 'Importing…' : 'Import'}</button>
 				</div>
-				<button onclick={() => (plan = null)}>Cancel</button>
-				<button class="active" disabled={importing} onclick={confirmImport}>{importing ? 'Importing…' : 'Import'}</button>
-			</div>
-		{/if}
-		{#if confirmClose && unsaved}
-			<div class="bar warn">
-				<span>{changeCount + lookChanges} unsaved {changeCount + lookChanges === 1 ? 'change' : 'changes'} to the item.</span>
-				<button onclick={() => (confirmClose = false)}>Keep editing</button>
-				<button class="danger" onclick={discard}>Discard them</button>
-			</div>
-		{/if}
-		{#if error}<div class="bar error">{error}</div>{/if}
-		{#if note && !error}<div class="bar ok">{note}</div>{/if}
+			{/if}
+		{/snippet}
 
 		<div class="body">
 			<aside>
 				<button class="new" class:active={isNew} onclick={startNew}>New item…</button>
 				<input type="search" placeholder="Item name or entry" bind:value={query} aria-label="Find an item" />
+				<div class="sort">
+					<select bind:value={prefs.itemSort} aria-label="Sort items by" title="Sort the items found by">
+						{#each SORTS as [key, label] (key)}<option value={key}>{label}</option>{/each}
+					</select>
+					<button onclick={() => (prefs.itemSortDesc = !prefs.itemSortDesc)} aria-label="Sort direction" title={prefs.itemSortDesc ? 'High to low: click for low to high' : 'Low to high: click for high to low'}
+						>{prefs.itemSortDesc ? '↓' : '↑'}</button
+					>
+				</div>
 				<ul class="found" aria-label="Items found">
 					{#each found as i (i.entry)}
 						<li>
-							<button class:on={i.entry === target.entry} onclick={() => open(i.entry)} oncontextmenu={(e) => resultMenu(e, i)} title="Right-click to copy the command that gives it in the game">
+							<button class:on={i.entry === target.entry} onclick={() => open(i.entry)} oncontextmenu={(e) => resultMenu(e, i)} title="Right-click to copy its entry, its name or the command that gives it in the game">
 								<ItemIcon displayId={i.displayId} />
-								<span class="name" style:color={i.entry === target.entry ? undefined : QUALITY_COLORS[i.quality]}>{i.name || '(no name)'}</span>
-								<span class="dim">{i.entry}</span>
+								<span class="name" style:color={i.entry === target.entry ? undefined : QUALITY_VARS[i.quality]}>{i.name || '(no name)'}</span>
+								<span class="dim" title="Item {i.entry}">{sideNumber(i)}</span>
 							</button>
 						</li>
 					{:else}
@@ -689,7 +598,7 @@
 					</nav>
 					<div class="scroll">
 						{#if !record}
-							<p class="dim">{loading ? 'Loading the item…' : ''}</p>
+							<p class="dim">{ed.loading ? 'Loading the item…' : ''}</p>
 						{:else}
 							{#each tabs as t (t.id)}
 								{#if t.id === tab}
@@ -735,9 +644,8 @@
 				</section>
 			{/if}
 		</div>
-	</div>
+	</EditorFrame>
 {/if}
-
 
 {#snippet modelView(big: boolean)}
 	<div class="model" class:big>
@@ -766,65 +674,11 @@
 {/snippet}
 
 <style>
-	.editor {
-		position: fixed;
-		inset: 0;
-		z-index: 165;
-		display: flex;
-		flex-direction: column;
-		background: var(--bg);
-		color: var(--text);
-	}
-	header {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		padding: 10px 16px;
-		border-bottom: 1px solid var(--border);
-		background: var(--panel);
-	}
-	.title {
-		flex: 1;
-		min-width: 0;
-	}
-	h2 {
-		margin: 0;
-		font-size: 18px;
-		font-weight: 600;
-	}
-	.actions {
-		display: flex;
-		gap: 8px;
-	}
-	.bar {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 8px 16px;
-		font-size: 12px;
-		border-bottom: 1px solid var(--border);
-	}
-	.bar.warn span {
-		flex: 1;
-	}
 	.bar.plan .what {
 		flex: 1;
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
-	}
-	.bar.error {
-		color: var(--danger-text);
-		overflow-wrap: anywhere;
-		white-space: pre-line;
-	}
-	.bar.ok {
-		color: #6fdc6f;
-	}
-	.body {
-		flex: 1;
-		min-height: 0;
-		display: flex;
 	}
 	aside {
 		width: 280px;
@@ -835,6 +689,14 @@
 		padding: 12px;
 		border-right: 1px solid var(--border);
 		background: var(--panel);
+	}
+	.sort {
+		display: flex;
+		gap: 4px;
+	}
+	.sort select {
+		flex: 1;
+		min-width: 0;
 	}
 	.found {
 		list-style: none;
@@ -859,7 +721,7 @@
 	}
 	.found button.on {
 		background: var(--accent);
-		color: #fff;
+		color: var(--accent-ink);
 	}
 	.found .name {
 		flex: 1;
@@ -873,22 +735,6 @@
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
-	}
-	.tabs {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 2px;
-		padding: 8px 12px 0;
-		border-bottom: 1px solid var(--border);
-		background: var(--panel);
-	}
-	.tabs button {
-		border-radius: 4px 4px 0 0;
-		border-bottom: none;
-	}
-	.tabs button.on {
-		background: var(--accent);
-		color: #fff;
 	}
 	.scroll {
 		flex: 1;
@@ -999,7 +845,7 @@
 	}
 	.seg button.on {
 		background: var(--accent);
-		color: #fff;
+		color: var(--accent-ink);
 	}
 	.display {
 		display: flex;
@@ -1025,9 +871,9 @@
 		flex-direction: column;
 		gap: 6px;
 		padding: 6px 8px;
-		border: 1px solid #c9a227;
+		border: 1px solid var(--warn);
 		border-radius: 4px;
-		color: #e8c95a;
+		color: var(--warn);
 		font-size: 12px;
 	}
 	.pending {
@@ -1082,7 +928,7 @@
 		gap: 24px;
 		border: 1px solid var(--border);
 		border-radius: 4px;
-		background: #1a1d24;
+		background: var(--preview-bg);
 	}
 	.grid-area {
 		flex: 1 1 40%;

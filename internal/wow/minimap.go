@@ -53,16 +53,18 @@ func (c *Client) MinimapTiles(mapName string) ([]MapTile, error) {
 
 // minimapTable parses md5translate.trs into tiles by lower-case map name.
 func (c *Client) minimapTable() (map[string][]MapTile, error) {
+	// The read runs outside minimapMu: it may wait for a Resume, which forgets the table under c.mu.
 	c.minimapMu.Lock()
-	defer c.minimapMu.Unlock()
-	if c.minimap != nil {
-		return c.minimap, nil
+	table, gen := c.minimap, c.minimapGen
+	c.minimapMu.Unlock()
+	if table != nil {
+		return table, nil
 	}
 	raw, err := c.read(MinimapIndexPath)
 	if err != nil {
 		return nil, fmt.Errorf("minimap table: %w", err)
 	}
-	table := map[string][]MapTile{}
+	table = map[string][]MapTile{}
 	ParseMinimapIndex(raw).Each(func(name, file string) {
 		m := minimapLine.FindStringSubmatch(name)
 		if m == nil {
@@ -81,7 +83,11 @@ func (c *Client) minimapTable() (map[string][]MapTile, error) {
 			return tiles[i].Y < tiles[j].Y || tiles[i].Y == tiles[j].Y && tiles[i].X < tiles[j].X
 		})
 	}
-	c.minimap = table
+	c.minimapMu.Lock()
+	if gen == c.minimapGen {
+		c.minimap = table
+	}
+	c.minimapMu.Unlock()
 	return table, nil
 }
 
@@ -147,7 +153,7 @@ func (c *Client) MapOverview(mapName string) ([]byte, error) {
 	}
 	// "overview2" since tiles without a minimap image are drawn from their heights (#222): an older
 	// cached overview left them out.
-	path, err := c.cachePath("overview2", mapName)
+	path, err := c.overviewPath(mapName)
 	if err != nil {
 		return nil, err
 	}
@@ -220,6 +226,16 @@ func (c *Client) MapOverview(mapName string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// overviewPath is the cached overview of mapName. The key holds the archives' names, sizes and times,
+// so a patch written with new tiles, minimap images or heights builds a new overview instead of
+// showing the first one ever made (#493).
+func (c *Client) overviewPath(mapName string) (string, error) {
+	c.mu.RLock()
+	stamps := c.stamps
+	c.mu.RUnlock()
+	return c.cachePath("overview2", mapName+"|"+hashHex(stamps))
+}
+
 // drawTileRelief draws a tile without a minimap image from its ADT: each overview pixel takes the
 // height sample under it, lit from the north-west by the slope, so ridges, walls and pits show.
 // A tile it cannot read is drawn flat grey, so it still shows as there.
@@ -228,18 +244,8 @@ func (c *Client) drawTileRelief(out *image.NRGBA, mapName string, t MapTile) {
 	flat := color.NRGBA{90, 96, 104, 255}
 	var h []float32
 	if raw, err := c.read(adt.TilePath(mapName, t.X, t.Y, "")); err == nil {
-		if ter, err := adt.ParseTerrain(raw); err == nil {
-			h = make([]float32, (side+1)*(side+1))
-			for _, ch := range ter.Chunks {
-				// The 9x9 outer samples sit at even rows of the 17 interleaved rows (9 + 8).
-				for r := 0; r <= adt.CellsPerChunk; r++ {
-					for q := 0; q <= adt.CellsPerChunk; q++ {
-						x := ch.IndexX*adt.CellsPerChunk + q
-						y := ch.IndexY*adt.CellsPerChunk + r
-						h[y*(side+1)+x] = ch.Heights[r*17+q]
-					}
-				}
-			}
+		if g, err := TileGround(raw); err == nil {
+			h = g.Heights
 		}
 	}
 	at := func(x, y int) float32 {

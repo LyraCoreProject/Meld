@@ -1,14 +1,18 @@
 <script lang="ts">
 	import Modal from './Modal.svelte'
 	import Slider from './Slider.svelte'
+	import TileGrid from './TileGrid.svelte'
+	import { boundingSquare, maskOf, placeTiles, squareOf } from '../lib/terrain/tileMask'
+	import { TILE_CELLS } from '../lib/wow/format'
+	import { askConfirm } from '../lib/state/confirm'
 	import { editor, setStatus, stats, ui } from '../lib/state/editor.svelte'
 	import { NO_ROLE } from '../lib/terrain/roles'
 	import { engineRef } from '../lib/state/engineRef'
 	import { defaultMapInfo, type MapInfo } from '../lib/engine/MapDocument'
 	import { loadAreas } from '../lib/wow/areas'
-	import { LoadingScreens, OpenImageDialog, ReadImageFile, WriteLoadingScreen } from '../../wailsjs/go/main/App'
+	import { LoadingScreens, MapEntries, OpenImageDialog, ReadImageFile, WriteLoadingScreen } from '../../wailsjs/go/main/App'
 	import { vmangos } from '../../wailsjs/go/models'
-	import { hasBackend } from '../lib/io/mapio'
+	import { hasBackend } from '../lib/io/backend'
 	import { base64ToBytes, bytesToBase64 } from '../lib/io/base64'
 	import { fetchImage } from '../lib/wow/api'
 
@@ -25,12 +29,13 @@
 	/** The map's size: in client tiles for a region, else in cells. */
 	const tiles = $derived(editor.regionBlock ? `${editor.regionBlock.size}×${editor.regionBlock.size} tiles` : `${editor.mapSize} × ${editor.mapSize} cells`)
 	const azeroth = $derived(!!editor.region)
-	// A region saved before the file kept its liquids or chunk data holds only what was drawn since
-	// (#525): Compile then leaves the client's own alone, which the author should know.
+	// A region saved before the file kept its holes, liquids or chunk data holds only what was drawn
+	// since (#525, #663): Compile then leaves the client's own alone, which the author should know.
 	const doc = engineRef.current?.activeDocument()
-	const unknown = doc && editor.region ? [!doc.liquidsKnown && 'liquids', !doc.chunkDataKnown && 'zones, flags and no-tuft cells'].filter((x): x is string => !!x) : []
+	const unknown = doc && editor.region ? [!doc.holesKnown && 'holes', !doc.liquidsKnown && 'liquids', !doc.chunkDataKnown && 'zones, flags and no-tuft cells'].filter((x): x is string => !!x) : []
 
 	// A map made for the client also says what it is to the client and the server (written on publish).
+	// The same object after the map grows (Engine.growWorld keeps it).
 	const ref = engineRef.current?.activeVmangos() ?? null
 	let info = $state<MapInfo>(ref?.info ? { ...ref.info } : defaultMapInfo())
 	let areas = $state<vmangos.Area[]>([])
@@ -39,7 +44,12 @@
 		LoadingScreens()
 			.then((s) => (screens = s ?? []))
 			.catch(() => {})
+	// The client's maps, for where a ghost goes back from (#705).
+	let maps = $state<vmangos.MapEntry[]>([])
 	if (ref && hasBackend()) {
+		MapEntries()
+			.then((m) => (maps = m ?? []))
+			.catch(() => {})
 		void loadAreas().then((a) => (areas = a.filter((x) => x.mapId === ref.mapId && !x.parent)))
 		void loadScreens()
 	}
@@ -100,6 +110,42 @@
 			writing = false
 		}
 	}
+	// The map's tiles on the client's 64×64 grid (#46): those of its square it keeps, and tiles past it,
+	// which grow the square (up to 8×8) by making the map again, which can't be undone.
+	// Read from the map again after every undo step (an undo of a tile, or the grow's new map).
+	const worldSquare = $derived.by(() => {
+		void ui.historyVersion
+		return ref ? squareOf(ref, editor.mapSize / TILE_CELLS) : null
+	})
+	const worldTiles = $derived.by(() => {
+		void ui.historyVersion
+		return ref ? placeTiles(ref, editor.mapSize / TILE_CELLS) : new Set<number>()
+	})
+	let growing = $state(false)
+	async function setTiles(next: Set<number>) {
+		const e = engineRef.current
+		if (!e || !ref || !worldSquare) return
+		const sq = boundingSquare(next, worldSquare)
+		if (!sq) return
+		if (sq.size === worldSquare.size) {
+			e.setWorldTiles(maskOf(worldSquare, next))
+			return
+		}
+		const yes = await askConfirm(
+			`The tiles reach past the map's square, so the map is made again as ${sq.size}×${sq.size} tiles from tile ${sq.x}, ${sq.y}, with its ground, paint and models moved into it. That can't be undone: the map's undo history starts again.`,
+			{ title: 'Grow the map?', ok: 'Grow' },
+		)
+		if (!yes) return
+		growing = true
+		try {
+			e.growWorld(sq, maskOf(sq, next))
+			setStatus(`The map is now ${sq.size}×${sq.size} tiles from tile ${sq.x}, ${sq.y}.`)
+		} catch (err) {
+			setStatus(`The map could not grow: ${err instanceof Error ? err.message : err}`, 8000)
+		} finally {
+			growing = false
+		}
+	}
 	function setInfo(patch: Partial<MapInfo>) {
 		info = { ...info, ...patch }
 		engineRef.current?.setMapInfo(info)
@@ -136,8 +182,8 @@
 		<span class="k">Size</span><span>{tiles}</span>
 		{#if editor.region}<span class="k">Region</span><span title={editor.region}>{editor.region}</span>{/if}
 		{#if unknown.length}
-			<span class="k">The client's</span><span
-				title="This map was saved before Meld kept its {unknown.join(' and ')}, so it holds only what was drawn since: Compile writes that and leaves the client's own as they are">{unknown.join('; ')}</span
+			<span class="k">The client's</span><span title="This map was saved before Meld kept its {unknown.join(' and ')}, so it holds only what was drawn since: Compile writes that and leaves the client's own as they are"
+				>{unknown.join('; ')}</span
 			>
 		{/if}
 		{#if editor.filePath}<span class="k">File</span><span title={editor.filePath}>{editor.filePath}</span>{/if}
@@ -168,7 +214,12 @@
 			<span class="k"></span>
 			<span class="screen">
 				<canvas bind:this={preview} width={160} height={120} class:hidden={!previewOk}></canvas>
-				<button disabled={writing || ui.busy || !hasBackend()} onclick={() => void importScreen()} title="Make a PNG of your own the map's loading screen: written into the client's patch at once ({LOADING_SCREEN_SIZE}x{LOADING_SCREEN_SIZE}, stretched to the screen as the game's own)">{writing ? 'Writing…' : 'Picture…'}</button>
+				<button
+					disabled={writing || ui.busy || !hasBackend()}
+					onclick={() => void importScreen()}
+					title="Make a PNG of your own the map's loading screen: written into the client's patch at once ({LOADING_SCREEN_SIZE}x{LOADING_SCREEN_SIZE}, stretched to the screen as the game's own)"
+					>{writing ? 'Writing…' : 'Picture…'}</button
+				>
 			</span>
 			{#if screenError}<span class="k"></span><span class="error">{screenError}</span>{/if}
 			<label class="k" for="mi-players">Player limit</label>
@@ -179,12 +230,27 @@
 			>
 			<span class="k">Ghost goes to</span>
 			<span class="row">
-				<input type="number" value={info.ghostMap} onchange={(e) => setInfo({ ghostMap: Math.round(num(e)) })} title="The map a dead player's ghost goes back to its corpse from (-1 for this map)" aria-label="Ghost entrance map" />
+				<select value={info.ghostMap} onchange={(e) => setInfo({ ghostMap: Number((e.target as HTMLSelectElement).value) })} title="The map a dead player's ghost goes back to its corpse from" aria-label="Ghost entrance map">
+					<option value={-1}>This map</option>
+					{#each maps as m (m.ID)}{#if m.ID !== ref.mapId}<option value={m.ID}>{m.Name || m.Dir} ({m.ID})</option>{/if}{/each}
+					{#if info.ghostMap !== -1 && (info.ghostMap === ref.mapId || !maps.some((m) => m.ID === info.ghostMap))}<option value={info.ghostMap}
+							>{info.ghostMap === ref.mapId ? `This map (${ref.mapId})` : `Map ${info.ghostMap}`}</option
+						>{/if}
+				</select>
 				<input type="number" step="any" value={info.ghostX} onchange={(e) => setInfo({ ghostX: num(e) })} aria-label="Ghost entrance x" />
 				<input type="number" step="any" value={info.ghostY} onchange={(e) => setInfo({ ghostY: num(e) })} aria-label="Ghost entrance y" />
 			</span>
 		</div>
-		<p class="dim">Written on publish: the kind, name, zone and loading screen into the client's Map.dbc (Picture… writes its own loading screen at once), and the kind, zone, player limit and ghost entrance into the server's map_template.</p>
+		<p class="dim">
+			Written on publish: the kind, name, zone and loading screen into the client's Map.dbc (Picture… writes its own loading screen at once), and the kind, zone, player limit and ghost entrance into the server's map_template.
+		</p>
+		{#if !info.wmoOnly}
+			<div class="section">Tiles on the client's map</div>
+			<div class:busy={growing}>
+				<TileGrid tiles={worldTiles} keep={worldSquare} onchange={(t) => void setTiles(t)} />
+			</div>
+			<p class="dim">Publish writes these tiles where they are on the grid. A tile taken away is hidden and left out, its ground kept to add back. A tile past the dashed square grows the map, up to 8×8 tiles.</p>
+		{/if}
 	{/if}
 	<div class="section">World</div>
 	<label class="check" title="Ocean at the sea level wherever the ground lies below it. Lakes and rivers are painted with the Water tool."
@@ -249,6 +315,10 @@
 		width: 70px;
 		min-width: 0;
 	}
+	.row select {
+		flex: 1;
+		min-width: 0;
+	}
 	.facts {
 		display: grid;
 		grid-template-columns: 70px 1fr;
@@ -283,5 +353,9 @@
 		color: var(--text-dim);
 		font-size: 11px;
 		margin: 2px 0 6px;
+	}
+	.busy {
+		pointer-events: none;
+		opacity: 0.6;
 	}
 </style>

@@ -1,9 +1,10 @@
 // The creature editor's Spells tab (#243): Scarlet Commander Mograine (3976) shows list 39760's two spells with names, icons and text from the client, the Add spells list shows the creature abilities without typing, the Mage: Fire category lists Fire Blast, the Frost school empties it, a search in it finds Fireball, adding it is an unsaved edit that Save counts and Revert undoes; nothing is written to the database.
+// touches: frontend/src/components/CreatureEditor.svelte, frontend/src/components/SpellsTab.svelte, frontend/src/components/SpellPicker.svelte, internal/vmangos/creaturespells.go, internal/vmangos/spelllist.go
 const { ui } = await P.state()
 P.e.newDocument(256, 'flat', 0, 'Probe')
 await P.frames(1)
 // The waits give room for a slow database; the whole probe takes about 25 s.
-const WAIT = 300_000
+const WAIT = 120_000
 const root = () => document.querySelector('[aria-label="Creature editor"]')
 const tab = () => root()?.querySelector('.spells')
 const button = (el, text) => [...(el?.querySelectorAll('button') ?? [])].find((b) => b.textContent.trim().startsWith(text))
@@ -58,7 +59,18 @@ const reverted = button(tab().querySelector('.head'), 'Saved') !== undefined
 ui.creatureEditor = null
 await P.frames(1)
 const ok =
-	listed[0].startsWith('Crusader Strike') && listed[1].startsWith('Hammer of Justice') && texts.length === 2 && texts.every((t) => t && !t.includes('$')) &&
-	listLine.includes('39760') && npcRows === 200 && npcCount.startsWith('Showing 200 of') && fireRows > 50 && found.startsWith('Fireball') && afterAdd.length === 3 && afterAdd[2].startsWith('Fireball') &&
-	saveText === 'Save spells' && warned.includes('unsaved changes to the spells') && reverted
+	listed[0].startsWith('Crusader Strike') &&
+	listed[1].startsWith('Hammer of Justice') &&
+	texts.length === 2 &&
+	texts.every((t) => t && !t.includes('$')) &&
+	listLine.includes('39760') &&
+	npcRows === 200 &&
+	npcCount.startsWith('Showing 200 of') &&
+	fireRows > 50 &&
+	found.startsWith('Fireball') &&
+	afterAdd.length === 3 &&
+	afterAdd[2].startsWith('Fireball') &&
+	saveText === 'Save spells' &&
+	warned.includes('unsaved changes to the spells') &&
+	reverted
 return { ok, npcRows, npcCount, fireRows, listed, texts, listLine, found, afterAdd, saveText, warned, reverted }

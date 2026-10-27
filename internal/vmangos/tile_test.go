@@ -3,22 +3,19 @@ package vmangos
 import (
 	"bytes"
 	"math"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"Meld/internal/adt"
 	"Meld/internal/mpq"
+	"Meld/internal/testclient"
 	"Meld/internal/wow"
 )
 
 // TestTileRoundTrip reads a real tile, edits one outer height and reads it back:
 // WOW_DIR=/path/to/client go test ./internal/vmangos/
 func TestTileRoundTrip(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("set WOW_DIR to a WoW 1.12 client to run")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +35,7 @@ func TestTileRoundTrip(t *testing.T) {
 	if layers == 0 || len(view.Alpha) != layers*AlphaBytes {
 		t.Fatalf("%d bytes of alpha maps for %d layers", len(view.Alpha), layers)
 	}
-	same, err := PatchTileHeights(root, view.Heights)
+	same, err := PatchTileHeights(root, view.Heights, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +45,7 @@ func TestTileRoundTrip(t *testing.T) {
 
 	const at = 50*LatticeSize + 60
 	view.Heights[at] += 3
-	patched, err := PatchTileHeights(root, view.Heights)
+	patched, err := PatchTileHeights(root, view.Heights, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,10 +71,7 @@ func TestTileRoundTrip(t *testing.T) {
 // and in Blizzard's patch-2.MPQ, and the copy it starts from must be patch-2's (#273).
 // It needs WOW_DIR set to the client.
 func TestBaseTileRootKeepsBlizzardPatches(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -104,10 +98,7 @@ func TestBaseTileRootKeepsBlizzardPatches(t *testing.T) {
 // It needs WOW_DIR set to the client, and is skipped when Meld's patch has the tile (the view is then
 // the patch's).
 func TestRegionSaveKeepsBlizzardPatch(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -173,10 +164,7 @@ func TestRegionSaveKeepsBlizzardPatch(t *testing.T) {
 // editor shows it (#380), even where the client's tile lifts it a few yards off that mean. It needs
 // WOW_DIR set to the client.
 func TestPatchMovesInnerSamples(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +181,7 @@ func TestPatchMovesInnerSamples(t *testing.T) {
 	for i := range outer {
 		outer[i] += 4
 	}
-	patched, err := PatchTileHeights(root, outer)
+	patched, err := PatchTileHeights(root, outer, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +209,7 @@ func TestPatchSculptedCellsTakeTheMean(t *testing.T) {
 	for i := range outer {
 		outer[i] = 10
 	}
-	built, err := adt.BuildTile(outer, adt.Changes{TileX: 32, TileY: 48})
+	built, err := adt.BuildTile(outer, adt.Ring{}, adt.Changes{TileX: 32, TileY: 48})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,11 +225,11 @@ func TestPatchSculptedCellsTakeTheMean(t *testing.T) {
 			}
 		}
 	}
-	root, err := adt.WriteHeights(built, terrain)
+	root, err := adt.WriteHeights(built, terrain, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	same, err := PatchTileHeights(root, outer)
+	same, err := PatchTileHeights(root, outer, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +241,7 @@ func TestPatchSculptedCellsTakeTheMean(t *testing.T) {
 	const gr, gc = 20, 30
 	edited := append([]float32(nil), outer...)
 	edited[gr*LatticeSize+gc] = 6
-	patched, err := PatchTileHeights(root, edited)
+	patched, err := PatchTileHeights(root, edited, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,7 +7,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"math"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -110,14 +112,44 @@ func TestRoundTrip(t *testing.T) {
 	if len(got.Objects) != 2 || got.Objects[0].Type != "oak" || got.Objects[0].Scale != 1.2 || got.Objects[1].Parent != 1 || got.Objects[0].Group != 3 || got.Objects[1].Group != 0 {
 		t.Fatalf("objects mismatch: %+v", got.Objects)
 	}
+	// A second save over the first replaces it and leaves no temp file.
+	m.Name = "again"
+	if err := Save(path, m); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Load(path); err != nil || got.Name != "again" {
+		t.Fatalf("resave: %v, %+v", err, got)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temp file left after a save: %v", err)
+	}
 }
 
-// A map opened without the client's liquids or chunk data keeps saying so across a save (#525), and
+// A save whose rename fails (here the map's path is a folder that isn't empty) reports the path and
+// removes its temp file rather than leaving it beside the map (#504).
+func TestSaveRenameFailRemovesTemp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.wmap")
+	if err := os.MkdirAll(filepath.Join(path, "in"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := Save(path, sample(32))
+	if err == nil {
+		t.Fatal("save over a folder succeeded")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Fatalf("error %q doesn't name the path", err)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temp file left after a failed rename: %v", err)
+	}
+}
+
+// A map opened without the client's holes, liquids or chunk data keeps saying so across a save (#525), and
 // one that has them writes neither flag.
 func TestUnknownFlagsRoundTrip(t *testing.T) {
 	for _, unknown := range []bool{false, true} {
 		m := sample(32)
-		m.LiquidsUnknown, m.ChunkDataUnknown = unknown, unknown
+		m.HolesUnknown, m.LiquidsUnknown, m.ChunkDataUnknown = unknown, unknown, unknown
 		var buf bytes.Buffer
 		if err := Write(&buf, m); err != nil {
 			t.Fatal(err)
@@ -126,12 +158,35 @@ func TestUnknownFlagsRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.LiquidsUnknown != unknown || got.ChunkDataUnknown != unknown {
-			t.Fatalf("unknown %v: read liquids %v, chunk data %v", unknown, got.LiquidsUnknown, got.ChunkDataUnknown)
+		if got.HolesUnknown != unknown || got.LiquidsUnknown != unknown || got.ChunkDataUnknown != unknown {
+			t.Fatalf("unknown %v: read holes %v, liquids %v, chunk data %v", unknown, got.HolesUnknown, got.LiquidsUnknown, got.ChunkDataUnknown)
 		}
 		hdr, _ := json.Marshal(&got.Header)
 		if !unknown && bytes.Contains(hdr, []byte("Unknown")) {
 			t.Fatalf("a known map writes the flags: %s", hdr)
+		}
+	}
+}
+
+// The kinds of the liquid IDs past the base four survive a save (#540), and a map without any writes none.
+func TestLiquidKindsRoundTrip(t *testing.T) {
+	for _, kinds := range []map[string]string{nil, {"21": "slime"}} {
+		m := sample(32)
+		m.LiquidKinds = kinds
+		var buf bytes.Buffer
+		if err := Write(&buf, m); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Read(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.LiquidKinds) != len(kinds) || got.LiquidKinds["21"] != kinds["21"] {
+			t.Fatalf("wrote %v, read %v", kinds, got.LiquidKinds)
+		}
+		hdr, _ := json.Marshal(&got.Header)
+		if kinds == nil && bytes.Contains(hdr, []byte("liquidKinds")) {
+			t.Fatalf("a map without kinds writes them: %s", hdr)
 		}
 	}
 }
@@ -176,48 +231,14 @@ func writeV2(t *testing.T, m *MapData) []byte {
 	return writeOld(t, m, 2)
 }
 
-// writeOld writes a version 2, 3 or 4 stream: the current layout without the version 5 blobs, for
-// version 3 without liquids too, and for version 2 without holes.
+// writeOld writes a version 2 to 5 stream (writeVersion's layout for that version), failing the test
+// on an error.
 func writeOld(t *testing.T, m *MapData, version uint32) []byte {
 	t.Helper()
-	hdr, err := json.Marshal(&m.Header)
-	if err != nil {
+	var buf bytes.Buffer
+	if err := writeVersion(&buf, m, version); err != nil {
 		t.Fatal(err)
 	}
-	dec := func(s string) []byte {
-		b, err := base64.StdEncoding.DecodeString(s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return b
-	}
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	var pre [12]byte
-	copy(pre[:4], Magic)
-	binary.LittleEndian.PutUint32(pre[4:8], version)
-	binary.LittleEndian.PutUint32(pre[8:12], uint32(len(hdr)))
-	gz.Write(pre[:])
-	gz.Write(hdr)
-	gz.Write(dec(m.Heights))
-	gz.Write(dec(m.Weights))
-	gz.Write(dec(m.ChunkSlots))
-	if version >= 3 {
-		gz.Write(dec(m.Holes))
-	}
-	if version >= 4 {
-		liquids := dec(m.Liquids)
-		var n [4]byte
-		binary.LittleEndian.PutUint32(n[:], uint32(len(liquids)))
-		gz.Write(n[:])
-		gz.Write(liquids)
-	}
-	if version >= 5 {
-		gz.Write(dec(m.AreaIDs))
-		gz.Write(dec(m.ChunkFlags))
-		gz.Write(dec(m.NoEffect))
-	}
-	gz.Close()
 	return buf.Bytes()
 }
 
@@ -404,5 +425,42 @@ func TestNoClientLinkByDefault(t *testing.T) {
 	}
 	if got.Region != nil || got.Vmangos != nil {
 		t.Fatal("a map with no link must not gain one")
+	}
+}
+
+// A map made for the client keeps its place on the tile grid and its mask of present tiles (#46), and
+// a place off the grid or a mask that doesn't fit its square is refused.
+func TestVmangosTilesRoundTrip(t *testing.T) {
+	m := sample(2 * TileCells)
+	m.Vmangos = &VmangosFolder{Dir: "MeldTest", MapID: 1900, TileX: 30, TileY: 62, Tiles: "1101"}
+	var buf bytes.Buffer
+	if err := Write(&buf, m); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Read(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := got.Vmangos; v == nil || v.TileX != 30 || v.TileY != 62 || v.Tiles != "1101" {
+		t.Fatalf("tiles lost: %+v", got.Vmangos)
+	}
+	for _, bad := range []VmangosFolder{
+		{TileX: 63},              // two tiles from 63 leave the grid
+		{TileY: -1},              // off the grid
+		{Tiles: "11"},            // two of four tiles
+		{Tiles: "0000"},          // no tile
+		{Tiles: "1x01"},          // not a mask
+		{TileX: 1, Tiles: "111"}, // three of four
+	} {
+		m.Vmangos = &bad
+		if err := Write(&bytes.Buffer{}, m); err == nil {
+			t.Errorf("%+v: written, want refused", bad)
+		}
+	}
+	// A size that isn't whole tiles can't have a place on the grid.
+	m = sample(32)
+	m.Vmangos = &VmangosFolder{TileX: 1}
+	if err := Write(&bytes.Buffer{}, m); err == nil {
+		t.Error("a 32-cell map placed on the grid: written, want refused")
 	}
 }

@@ -19,7 +19,9 @@ import (
 // files' frame. vmangos' vmap extractor does the same, and only for a building at exactly 0 on the
 // ground plane (wmo.cpp, WMOInstance). So the WDT's position is the file frame less ZeroPoint on X
 // and Z, and the editor reads it that way; a building moved off 0 would be placed by the client and
-// the server's collision data differently, which is why a save refuses to move it.
+// the server's collision data differently, which is why a save refuses to move it, and why a new
+// WMO-only map (ExportMap, MapSpec.Global) writes its building at 0 on X and Z whatever its spot in
+// the editor (the owner's choice on #272; the editor's frame for such a map follows the building).
 
 // globalGroundDrop is how far below the building's lowest point the hidden ground lies, in yards.
 const globalGroundDrop = 20
@@ -150,9 +152,9 @@ func buildWMOOnly(set *mpq.Set, e RegionEdit, wdt []byte, w GlobalWMO) ([]mpq.Fi
 		return nil, fmt.Errorf("%s's building must be a WMO, not %s", e.MapName, model)
 	}
 	if !hasSet {
-		doodadSet = 0 // modelType leaves set 0 out of the name
+		doodadSet = 0 // adt.ModelType leaves set 0 out of the name
 	}
-	moved := ObjectView{Type: modelType(adt.WMO, orig.Name, orig.DoodadSet), X: building.X, Y: building.Y, Z: building.Z,
+	moved := ObjectView{Type: adt.ModelType(adt.WMO, orig.Name, orig.DoodadSet), X: building.X, Y: building.Y, Z: building.Z,
 		RotY: building.RotY, TiltX: building.TiltX, TiltZ: building.TiltZ, Scale: building.Scale}
 	if !unchanged(moved, e, orig) {
 		return nil, fmt.Errorf("%s's building can't be moved, turned or scaled: the server's creatures and collision stand where the client has it. Put it back (Undo) to save", e.MapName)

@@ -5,6 +5,7 @@
 import type { Terrain } from '../terrain/Terrain'
 import type { ObjectLayer } from '../world/ObjectLayer'
 import type { Command } from '../state/history'
+import { addedCommand } from '../world/objectCommands'
 import { compactChunk, SLOTS } from '../terrain/chunkPaint'
 import { paintPixel } from './brush'
 import { PATH_KINDS, crossWeight, downhill, fencePieces, limitGrade, pathField, riverBed, samplePath, type MapPath, type PathSamples } from '../terrain/paths'
@@ -31,7 +32,10 @@ class HeightEdit {
 	rect(): { x0: number; z0: number; x1: number; z1: number } | null {
 		if (!this.index.length) return null
 		const V = this.t.verts
-		let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity
+		let x0 = Infinity,
+			z0 = Infinity,
+			x1 = -Infinity,
+			z1 = -Infinity
 		for (const i of this.index) {
 			const x = i % V
 			const z = (i - x) / V
@@ -113,7 +117,10 @@ class PaintEdit {
 		const per = this.per
 		const before = new Map(this.chunks)
 		const after = new Map<number, { weights: Uint8Array; slots: Uint8Array }>()
-		let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity
+		let x0 = Infinity,
+			z0 = Infinity,
+			x1 = -Infinity,
+			z1 = -Infinity
 		for (const c of before.keys()) {
 			// Frees the slots painting emptied, as a brush stroke's end does.
 			compactChunk(side, t.splatRes, t.chunkSlots, t.weights, c)
@@ -207,12 +214,7 @@ function placeFence(objects: ObjectLayer, sm: PathSamples, path: MapPath, piece?
 	const pieces = fencePieces(sm, span, !!piece?.alongZ, path.turn)
 	if (pieces.length > MAX_FENCE_MODELS) return { cmd: null, message: `That would stand ${pieces.length} models: more than ${MAX_FENCE_MODELS}. Raise the spacing or shorten the path.` }
 	const added = pieces.map((p) => objects.add({ type: path.model, x: p.x, z: p.z, yOff: 0, rotY: p.rotY, scale: 1 }))
-	const saved = added.map((o) => ({ ...o }))
-	const cmd: Command = {
-		label: `Apply ${path.name}`,
-		undo: () => saved.forEach((o) => objects.remove(o.id)),
-		redo: () => saved.forEach((o) => objects.add({ ...o })),
-	}
+	const cmd = addedCommand(objects, added, `Apply ${path.name}`)
 	return { cmd, message: `Fence applied: ${added.length} models over ${Math.round(sm.length)} yd.` }
 }
 

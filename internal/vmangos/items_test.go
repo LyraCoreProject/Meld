@@ -1,11 +1,11 @@
 package vmangos
 
 import (
-	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"Meld/internal/testclient"
 	"Meld/internal/wow"
 )
 
@@ -88,7 +88,7 @@ func TestItemsScriptRoundTrip(t *testing.T) {
 		TemplateColumn{Name: "description", Kind: "text", MaxLen: 255},
 		TemplateColumn{Name: "dmg_min1", Kind: "float"},
 		TemplateColumn{Name: "other_team_entry", Kind: "uint", Nullable: true, Max: 1<<32 - 1})
-	rows := [][]string{{"25", "0", `It's \\ "fine"`, `line\none`, "2.5", "NULL"}}
+	rows := []batchRow{{"25", "0", `It's \ "fine"`, "line\none", "2.5", "NULL"}}
 	script := templateScript(itemScript, cols, rows, "", time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC))
 	if !strings.Contains(script, "-- It's \\ \"fine\" (entry 25, patch 0)") {
 		t.Fatalf("script:\n%s", script)
@@ -122,10 +122,7 @@ func TestCreateItemSQL(t *testing.T) {
 // TestItemsLive reads an item, exports it, plans its import and dresses a character in it, from
 // the server and client. It needs VMANGOS_DIR (database running) and WOW_DIR, and writes nothing.
 func TestItemsLive(t *testing.T) {
-	dir, clientDir := os.Getenv("VMANGOS_DIR"), os.Getenv("WOW_DIR")
-	if dir == "" || clientDir == "" {
-		t.Skip("VMANGOS_DIR or WOW_DIR not set")
-	}
+	dir, clientDir := testclient.ServerDir(t), testclient.DataDir(t)
 	rec, err := ReadItemTemplate(dir, 25) // Worn Shortsword
 	if err != nil {
 		t.Fatal(err)

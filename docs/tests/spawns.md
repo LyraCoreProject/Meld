@@ -3,6 +3,30 @@
 Spawns, the creature editor, paths, vendors and portals. The general methods these entries use (the dev page in headless
 Chrome, probes, scenes, measuring performance) are in `docs/TESTS.md`; read that first.
 
+## Spawn save: the edit list (#199, #432)
+
+Checks: `SpawnLayer.edits()`, built through `spawnEdits.ts`'s commands (`spawnAdd`, `spawnChange`,
+`spawnDelete`), gives one edit per spawn, and a DELETE only for a row the document loaded or saved,
+keyed by that row's own guid and entry (never a created spawn's, nor the entry a retype gave it).
+Unit: `bun test tests/spawnLayerEdits.test.ts`: fixed cases plus 300 seeded random sequences of add,
+move, retype, delete, undo, redo and save, each save applied to a model database that must end as the
+editor shows it. A failure prints the seed and the sequence. The Go half (a created guid taken in the
+database before the save) is `TestCreatedGUIDLive` in `internal/vmangos`, which needs the database.
+- Trap: `SpawnLayer` reaches `editor.svelte.ts`, so the test sets `globalThis.$state` before a dynamic
+  import, as `objectLayer.test.ts` does.
+
+## Spawn actions: new guids and pool entries (#557)
+
+Checks: `engine/SpawnActions.ts`, the spawn editing out of Engine. A new spawn's guid is above every
+open tab's spawns of its kind (monsters and NPCs share creature guids, objects have their own) and at
+least the database's next one (`nextFreeGuid`); a new pool's entry likewise (`nextFreePoolEntry`).
+Unit: `bun test tests/spawnActions.test.ts`, which also runs pool picking, the spawn keys and the
+spawn's right-click menu on a fake `SpawnHost`. Live: the `spawn-groups`, `creature-new`, `undo-spawns`, `compile-spawns`,
+`teleport-trigger` and `place-spawn-size` probes, which name the file in their `// touches:` lines.
+- Trap: the actions that read the world database (placing, the brush's first guid, a new pool, the
+  menu's Teleport items) call Go bindings, which `bun test` lacks; don't define `window` to stub them,
+  since `modelBuild.ts` and `navJobs.ts` check `typeof window` when loaded. They are the probes' part.
+
 ## Gear picker (a spawn's main hand, off hand and ranged items)
 
 Checks: `WeaponPicker.svelte` and the `ListWeapons` / `EquipmentFor` / `EquipmentItems` bindings. The
@@ -38,6 +62,30 @@ const pip = await import('<PipetteTool.ts URL>'); await pip.pickSpawn(editor.spa
 
 - Traps: a creature tile's badge is its level; the title holds entry, level, rank and type. The
   lists are cached in Go per server and client, so a changed template needs a restart to show.
+
+## Sorting the creature tabs by level (#659)
+
+Checks: the Creatures and NPCs tabs' sort menu (the browser header's `select[aria-label=Sort]`, #651) orders by level. In the dev page
+on Creatures: set the select's value to `level`, `level-desc` and `''` and dispatch `change`; the first
+tiles' `.badge` levels read all 1s, all 63s, then the database's order again, and
+`.spawn-browser .grid-wrap`'s scrollTop is 0 after each. The choice is in `prefs.browserViews.creature.sort`.
+Unit: `tests/browserViews.test.ts` (`byLevel`, the stored `sort`).
+
+## Spawns on cave and dungeon floors (#660)
+
+Checks: the Place tool (a creature or object template), dragging a spawn or a waypoint, and the spawn
+brush stand spawns on the first upward-facing surface under the cursor (`ctx.floor()`), not on the
+ground above a cave or in the air.
+- Unit: `tests/raycastFloor.test.ts` (a helper cube: the top is a floor; the bottom seen from below and
+  a wall are not). The layer must be `update`d and `cull`ed first, or nothing is packed and nothing is hit.
+- Live (not run yet): a mine under the ground, such as Fargodeep in Elwynn (save the view with
+  `window.__sceneText()` once found). Fly the camera into it, pick a creature in the Creatures tab, click the
+  floor: the spawn's `y` equals the floor's height, not the ground's (`__engine.terrain.heightAt(x, z)`).
+  Brush a few with the Doodad tool's Creatures mode; none land on the ground overhead.
+- Trap: from above the ground, the grass over a cave is still the ground (only an underground camera or
+  View › Layers › Terrain off looks through it).
+- Trap: the brush's Max slope and Avoid water rules still read the terrain at the point, the ground
+  above a cave.
 
 ## Game object editor: turning a spawn into another object, pools (#136)
 
@@ -98,9 +146,31 @@ world database for the types and names (without it every display is Unused). Uni
 `TestObjectDisplays` in `internal/vmangos/templates_test.go`.
 
 - By hand: pick another display, Save object, and the spawns of that entry change model
-  (`Engine.applyObjectTemplate`); set it back after.
+  (`SpawnActions.applyObjectTemplate`, through Engine's forwarder); set it back after.
 - The folder filter groups by the model's folder (TradeskillNodes, Chests), since most object
   models are used by one display each, so a file-name family would be one tile a family.
+
+## Game object editor: Sounds, a display's sound slots (#674)
+
+Checks: the Sounds tab (`ObjectSoundsTab.svelte`, `SoundPicker.svelte`) shows the ten sound slots of
+the template's display, named by SoundEntries, with Play; Add or Change opens the shared sound
+picker on that slot (search by name, file or ID), a click sets it as one unsaved change (Save object
+(1), Sounds (1)) that Revert drops, and Save object writes GameObjectDisplayInfo.dbc into Meld's
+patch. The probe `object-sounds` does it on the Forge (1743, display 197, UndeadCampfireSmall in
+Custom 0) in about 15 s: it saves on a throwaway client (`P.sandboxClient`), reads the slots back
+with `ObjectDisplaySounds`, and checks the real patch is untouched; nothing goes to the world
+database. Unit: `TestObjectDisplaySounds`, `TestSetObjectDisplaySounds` and, with the client,
+`TestClientObjectDisplaySounds` (the real table rewritten: same rows, string block and fields but the
+one row's slots) in `internal/vmangos/objectsounds_test.go`.
+
+- In the game (the owner's check): give a display a sound in Stand, Loop or Custom 0 (a loop such as
+  CampFireLargeLoop, 3244), save, restart the game and walk up to an object of that display; the
+  sound should fade in near it. Which slot the client plays for which object state is only known
+  from the client's own displays (fires use Loop, lamps Stand, forges Custom 0), so try the slot the
+  display's own sound already sits in first.
+- Traps: the slots belong to the display, so a change reaches every object that shares it (the
+  Forge's display 197 is used by 156 templates); the tab names them. The sound list has thousands of
+  rows: the picker draws the first 200 matches.
 
 ## Tilted game objects (#229)
 
@@ -189,6 +259,19 @@ In the dev page: `e.editPath('npc/<guid>')` (a key from `e.doc.spawnLayer.spawns
 (`[...document.querySelectorAll('.pathbar button')]`). A second press near the first point picks
 it instead of adding one (`ctx.paths.pickPoint`), so space test presses apart.
 
+## A spawn's scripts on the This spawn tab (#137)
+
+Checks: the Scripts list under the pool on the creature and game object editors' This spawn tab.
+Probe `spawn-scripts` (needs the world database) opens three spawns on a flat map and reads the
+list: the Shadowfang Keep lever (object 18901, guid 34006) has an On use script, the Altar of the
+Tides (2576) event 364, creature 6175 at guid 108 scripts at path points 1, 4, 7, 12 and 16. The
+Go side alone: `go test ./internal/vmangos/ -run SpawnScriptsReal -v` (skipped under `-short`, so
+`make test-full` runs it; `-v` logs the rows). Other spawns with scripts:
+`select g.guid, g.id from gameobject_scripts s join gameobject g on g.guid = s.id`, a creature with
+`ai_name = 'EventAI'` (2240, Syndicate Footpad). The list also has the scripts reached through other tables (#736): gossip options (creature 295, script 342), quests started and ended (197, script 54; 234, script 166) and a spell list's slots (4064, script 3019). A row with commands opens on click to list them (`ScriptCommands`, a lazy binding by table and id); the probe opens 197's Quest start and reads three. EventAI events do not open (an event runs up to three scripts). Trap: the list comes from a new binding, so the
+running `make dev` must have rebuilt its Go side (`/wow/status`'s `started` changes); before that the
+page logs `SpawnScripts is not a function`.
+
 ## World event spawns (#143)
 
 Checks: spawns of a world event (`WorldSpawn.events`, from `game_event_creature`/`_gameobject`) are
@@ -222,7 +305,10 @@ Checks: the Shop tab lists, adds, reorders and saves what a creature sells. Unit
 (Tharynn Bouden, 17 items), click the Shop tab. To test a save without changing the user's world
 database for good, use a creature with no shop (805, Cameron): add an item, Save shop, read it back
 with `await window.go.main.App.ReadVendor(805)`, then remove it and save again (the table is back as
-it was; `select count(*) from npc_vendor where entry=805` is 0).
+it was; `select count(*) from npc_vendor where entry=805` is 0). Probe: `bun run probe
+creature-shop` (#577: Brother Danil, 152, a row moved down and Revert, a row removed and the editor's
+Discard, reopened unchanged; nothing written). The tabs' shared dirty logic is unit-tested in
+`frontend/tests/rowList.test.ts`.
 - Trap: saving renumbers the slots 0..n in list order, so re-saving a real vendor's list as it was
   can still change its `slot` values. Test saves on a creature with no shop.
 - Trap: the tab keeps its list while other tabs are shown (it stays mounted, hidden); its unsaved
@@ -273,16 +359,15 @@ patch, the server's `data/5875/dbc` and `taxi_nodes`.
   TestClientTaxi` writes the three tables back byte for byte and finds Stormwind's stop 2 with the
   gryphon (Eastern Kingdoms: 43 stops, 132 routes; next stop 88, next route 501).
 - Live: probe `flight-paths` (Azeroth 36_49, Lakeshire is stop 5, its first listed route is 8 to
-  Stormwind, 23 points, about 1 min 46 s). It sets `window.confirm` to say yes, since Close asks about
-  unsaved changes. It also clicks a route's curve (through its middle point) and checks the route is picked.
+  Stormwind, 23 points, about 1 min 46 s). It closes the window through `ui.flightPaths`, which skips Close's
+  question about unsaved changes. It also clicks a route's curve (through its middle point) and checks the route is picked.
 - In the game (the owner's check): save a stop and a route, talk to a creature made flight master next
   to the stop (the server picks the stop nearest the flight master for the player's side, at any
   distance), learn the stop, and fly. A stop needs a route that starts there, or VMaNGOS leaves it
   out of its taxi mask (`sTaxiNodesMask`) and no flight master offers it. The server reads `taxi_nodes` and the route tables only at
-  start; Save restarts the world server on Windows when the patch changes.
-- Trap: a live Save writes Meld's patch-3.MPQ and the server's taxi tables (keeping `.before-meld`
-  copies) and closes the game and the world server around it; don't run it in a check unless the owner wants
-  that. The Go tests cover the write.
+  start; Save says to restart it when it runs (#661: Meld restarts nothing).
+- Trap: a live Save writes Meld's patch-3.MPQ (or queues it while the game runs) and the server's
+  taxi tables (keeping `.before-meld` copies); don't run it in a check unless the owner wants that. The Go tests cover the write.
 - Trap: the client's own data has odd stops: Northshire Abbey (1) and Programmer Isle (3) carry a
   Riding Horse (308) in the Horde slot, so they draw red; that's the table, not a bug.
 
@@ -299,15 +384,20 @@ server's names and teleports, draws them, and saves them to the client's patch a
   11208 − 53·533.33), then `ui.dialog = 'portals'`: "Eastern Kingdoms: 133 triggers", first
   "Deadmines - Entrance → 78", teleport to Deadmines (36) at level 10, and
   `__engine.triggerLayer.group` visible with the picked sphere's 192 points.
-- Trap: a live Save writes Meld's patch-3.MPQ and closes the game and the world server around it (as
-  Zones does); don't run it in a check unless the owner wants that. The Go tests cover the write.
+- Trap: a live Save writes Meld's patch-3.MPQ (or queues it while the game runs) and the world
+  database (as Zones does); don't run it in a check unless the owner wants that. The Go tests cover the write.
+- Layout (#718): probe `portals-fit`. With trigger 78 picked (as a sphere, then a box), at 100 % and
+  150 % interface size and in both themes, the dialog has no horizontal scrollbar and no field row
+  runs past it. Trap: a grid track of plain `1fr` grows to its widest child (the destination map
+  select with long map names pushed the form 117 px past the dialog); use `minmax(0, 1fr)` and give
+  the select `width: 100%`.
 - Teleport to destination (#306): probe `teleport-trigger`. With View › Area triggers on, a
   right-click on trigger 78 selects it (`__engine.triggerLayer.selected`) and its menu's Teleport to
   destination opens `DeadminesInstance 31_31 3` with the camera on the areatrigger_teleport spot
   (-14.6, -385.5, 62.5); `SpawnTeleports('object', 176296, 0)` (Portal to Stormwind, type 22)
   gives (-9003.5, 870.0) on map 0, and Lothos Riftwaker's (creature 14387) gossip teleport becomes
   the item `Teleport: Gossip: Transport me to the Molten Core, Lothos.` above Focus (#308; the probe
-  calls `Engine.addSpawnTeleports` on a menu it opens). Unit: `tests/teleport.test.ts` (ray against
+  calls `SpawnActions.addTeleports`, `P.e.spawnActions.addTeleports`, on a menu it opens). Unit: `tests/teleport.test.ts` (ray against
   spheres and turned boxes, which hit wins, the block opened round a spot),
   `internal/vmangos/teleport_test.go`. Other spawns with teleports, for a check by hand: Unstable
   Rift Crystal (object 180601, gossip to Molten Core), Morridune (creature 6729, gossip to
@@ -340,6 +430,21 @@ Stormwind Alliance-only), `TestParseClassLevelStats`.
 - Probe `creature-looks` (#221): opens the guide to step 3 and checks the preview stays in view while the page scrolls past the pickers (it is sticky; the row once shrank to 520px and the pickers spilled over it).
 - Trap: held items go through `EquipmentFor`, which may add a `creature_equip_template` row; leave
   the hands empty in a check, or delete that row too.
+
+## The database editors' shared frame (#576)
+
+Checks: the creature, game object, quest, item and spell editors open, read, leave, close, discard
+and save through one `TemplateEditor` (`lib/ui/templateEditor.svelte.ts`) inside `EditorFrame.svelte`.
+Unit: `cd frontend && bun test tests/templateEditor.test.ts` (a read overtaken by another opening or
+a close is dropped, leave and Discard, reopen after an import, a refused save's column). Live: the
+editors' probes run the flow end to end: `bun run probe quest-editor item-editor spell-editor
+creature-shop creature-new object-find object-quests` (Esc from a field, the Discard bar, Revert, Esc
+closing only the quest editor over the creature editor).
+- Trap: the frame's `:global` rules reach only the bars and `.body` that are the frame's direct
+  children, and `nav.tabs`; a class an editor's body shares with a component inside it (`.dim`,
+  `h3`, `.scroll`) stays in the editor's own styles, or the frame's rule would win inside that component.
+- Trap: the editors' `values` is a `$derived` alias of `ed.values`: assigning to it would not reach
+  the editor (svelte-check refuses it, since the alias is a `const`).
 
 ## Quest editor (#259)
 
@@ -465,7 +570,10 @@ Import or New item.
   over the looks; the search for the Battleworn Hammer finds display 8690, whose tile previews it on
   hover (the item's display_id unchanged), is picked by a click and applied by Change look, back on
   the fields, held; Change icon… marks INV_Axe_01 to be made on Save (Save item (3)), and Esc leaves a
-  second Change icon view; Revert.
+  second Change icon view; Revert; "sword" sorted by Item level, high to low (#677), lists 100
+  results with `ilvl N` on the right and falling levels (100 first), then Name again shows entries;
+  the probe puts the user's sort prefs back. `TestItemOrder` (the whitelisted ORDER BY) and, with
+  the world database, `TestSearchItemsSortedFromDatabase`.
 - New item from a kind: the probe opens New item…, picks Weapon › "Bow · Ranged (bow) (124)" and reads
   its explanation (it makes nothing). `TestUsualItemValues` (a tie takes the lower, delay and
   durability the middle, the INSERT); with `VMANGOS_DIR`, `TestItemKindsLive` (117 kinds; a bow:
@@ -501,7 +609,7 @@ Import or New item.
   with the same model, a new row past the last ID, an icon alone); with `WOW_DIR`,
   `TestItemLooksLive` (29604 displays, 2684 icons, the Battleworn Hammer's 8690 a weapon with
   INV_Hammer_15). Writing one into the real patch was not run on 2026-10-19: it changes the owner's
-  client (a row it keeps), and closes the game on Windows. To try it: pick an icon, Save,
+  client (a row it keeps); while the game runs it waits for it to close (#661). To try it: pick an icon, Save,
   then `ListItemDisplays` has the new ID and the item's tooltip shows the icon; in the game the
   item shows it once the game restarts.
 - Pictures: `bun run probe probes/scratch/item-look.js --shot <dir>` with `PROBE_ITEM=<entry>` (and

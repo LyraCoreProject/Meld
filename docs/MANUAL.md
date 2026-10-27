@@ -1,13 +1,13 @@
 # Meld manual
 
-Everything Meld does, tool by tool. For building it, see the [README](../README.md).
+Everything Meld does, tool by tool. For building it, see the [README](https://github.com/Coldensjo/Meld#readme).
 
 ## Features
 
 | Tool | Key | What it does |
 |---|---|---|
-| Select | `1` / `V` | Click a model to select it (`Shift`+click adds or removes one; `Alt`+click is the pipette: it picks the model to place, or the ground's texture to paint with); every selected model is outlined, and the Properties panel lists the selection. Drag a model to move the selection over the ground or onto buildings (it re-attaches to what it lands on; Properties › Detach frees it). Arrow keys nudge (camera-relative), `Alt+↑/↓` or `PgUp/PgDn` raise/lower, `Alt+←/→` or `R` spin, `Shift` for bigger steps, `Del` delete, `F` focus. `Ctrl+C` copies the selected models and `Ctrl+V` pastes copies under the cursor (a preview follows the mouse; click or `Enter` places them, in any map tab); `Ctrl+Shift+D` duplicates them in place. Drag on the ground to select an **area** and the models standing in it: **Cut hole** cuts the area out of the ground (for caves and cellars; **Fill hole** puts it back), `Ctrl+C` copies its terrain, holes, textures and objects, and `Ctrl+V` pastes into any open map: the paste follows the mouse, a click (or `Enter`) places it, `PgUp/PgDn` adjust its height, and `Esc` cancels. `Ctrl+A` / `Ctrl+D` select all / deselect. |
-| Sculpt | `2` | Raise, Lower, Smooth, Flatten, Noise, Mountain (ridged noise), Crevice and Terrace (steps the ground into levels; Shift+drag levels to the first click's step) brushes. |
+| Select | `1` / `V` | Click a model to select it (`Shift`+click adds or removes one; `Alt`+click is the pipette: it picks the model to place, or the ground's texture to paint with); every selected model is outlined, and the Properties panel lists the selection. Drag a model to move the selection over the ground or onto buildings (it re-attaches to what it lands on; Properties › Detach frees it). Arrow keys nudge (camera-relative), `Alt+↑/↓` or `PgUp/PgDn` raise/lower, `Alt+←/→` or `R` spin, `Shift` for bigger steps, `Del` delete, `F` focus. `Ctrl+C` copies the selected models and `Ctrl+V` pastes copies under the cursor (a preview follows the mouse; click or `Enter` places them, in any map tab); `Ctrl+Shift+D` duplicates them in place. Drag on the ground to select an **area** and the models standing in it (`L` switches between rectangle, lasso and polygon; with any of them `Shift`+drag adds to the area and `Ctrl`+drag takes from it): **Cut hole** cuts the area out of the ground (for caves and cellars; **Fill hole** puts it back), `Ctrl+C` copies its terrain, holes, textures and objects, and `Ctrl+V` pastes into any open map: the paste follows the mouse, a click (or `Enter`) places it, `PgUp/PgDn` adjust its height, and `Esc` cancels. `Ctrl+A` / `Ctrl+D` select all / deselect. |
+| Sculpt | `2` | Raise, Lower, Smooth, Flatten, Noise, Mountain (ridged noise), Crevice and Terrace (steps the ground into levels; Shift+drag levels to the first click's step) brushes, picked by the icons in the options bar (hover one for its name). Its **Brush** button opens the settings set once: edit limit, brush image, falloff curve, shape, Flatten's target and angled plane, Terrace's offset and painting while sculpting. The Paint, Water and Doodad brush bars have such a button too (Brush, Water, Placement or Spawns) for their own settings set once. |
 | Paint | `3` / `B` | **Paint mask** mode: brush a mask onto the ground (red overlay; `Alt` or Erase removes). Then click a texture in the palette to fill the whole mask with it, or use Fill mask / Invert / From selection / Clear. |
 | ↳ Paint texture | | Pick any WoW tileset texture in the palette and paint. Each paint chunk (8×8 cells) holds up to 4 textures, assigned automatically; the map's palette holds up to 255. |
 | Roads | `4` | Paints the selected texture with a hard edge and levels the ground across it. |
@@ -17,7 +17,8 @@ Everything Meld does, tool by tool. For building it, see the [README](../README.
 | Clear | `7` | Erase models, or paint in the brush: heights, liquids or holes. |
 | Doodad brush | `8` | Scatter a brush of weighted models over the ground; `Ctrl` erases them. |
 | Stamp | `0` | One stroke applies a stack of sculpt and paint brushes together. |
-| Map data | `9` | Paints the zone (AreaTable.dbc) each chunk belongs to, shown as a colour per zone; Set or Clear, `Alt`+click takes the zone under the cursor. The export writes it into the tiles' chunk headers. |
+| Script brush | `Y` | Paints with a Lua brush script (Noggit Red's script brushes): pick a `.lua` file of the scripts folder that calls `brush("name")` in the options bar (or Run it in Tools › Scripts), and its settings (tags) show beside the size and falloff. The click, each frame the button is held and the release run the brush's `on_left_click`, `on_left_hold` and `on_left_release`; `Shift`, `Ctrl`, `Alt` and `Space` reach it as `holding_shift()` and so on. One stroke is one undo step. The right mouse button moves the camera, so `on_right_*` never runs. Noggit Red's own brushes run where they use what Meld has (heights, models, noise, images), such as its height noise and prop placer. |
+| Map data | `9` | Paints the zone (AreaTable.dbc) each chunk belongs to, shown as a colour per zone; Set or Clear, `Alt`+click takes the zone under the cursor. It also marks chunks impassable and cells that grow no grass tufts. The export writes it into the tiles' chunk headers. |
 
 ### Layout
 
@@ -25,10 +26,12 @@ The layout follows Photoshop:
 
 - **Menu bar** at the top.
 - **Options bar** below it, showing the active tool's settings (mode, size, strength, falloff…).
-- **Toolbar** on the left.
+- **Toolbar** on the left, or on the right (Preferences › Toolbar on the right).
 - **Asset browser** along the bottom: search the client's doodads, buildings and textures in one box
   (`Ctrl+F`), narrow by category and zone, and hover a tile to see it large and turning in the
-  preview on the right. Recent picks sit at the top. Drag its top edge to resize it.
+  preview on the right (drag to turn a model, right-drag to move up and down it, scroll to zoom).
+  Recent picks sit at the top. The Creatures and NPCs tabs sort by level, and the Names checkbox
+  hides the names under the tiles. Drag its top edge to resize it.
 - **Document tabs** above the 3D view. Several maps can be open at once, each with its own undo
   history and camera. New Map and Open add a tab, Ctrl+Tab switches tabs, and Ctrl+W or the tab's
   ✕ closes one (it asks first if there are unsaved changes).
@@ -81,7 +84,6 @@ portals and interior fog). Creatures are dressed from their displays, equipment 
 Also included:
 
 - Round or **square** brushes; square brushes can snap to the grid for tile-aligned painting.
-
 - New-world generator: Open sea, Island, Archipelago, Rolling hills, Lakeland, Highlands, Mountains or Flat land, from 1 to 6 tiles a side, seeded.
 - **Auto-paint** textures by height and slope, plus automatic rock on cliffs. New maps start with
   Elwynn tilesets.
@@ -108,10 +110,28 @@ Also included:
   open region into the client's tiles, Compile to Server rebuilds the server's map data from those
   tiles, and Compile All does both. Compile to Server and Compile All also save the region's
   creature and game object edits into the world database, as File › Save Spawns to Database does. Launch asks first when the open region has edits the client lacks.
+  Meld never closes or starts the game or the servers: while the game runs, what a compile or save
+  writes into the client waits for you to close it (the status bar says how many files wait), and the
+  server's map data is rebuilt once you stop the world server. Start them again yourself.
+  Everything Meld writes into the client goes into `Data\patch-3.MPQ`, and each write keeps the patch
+  it replaced as `Data\patch-3.MPQ.prev` (only the last one). If a write lost something (a spell, an
+  icon, a zone, a flight path), close the game and Meld and rename `patch-3.MPQ.prev` back to
+  `patch-3.MPQ`.
 - **Edit**: Undo / Redo, History, Copy / Paste, Select All / Deselect, cut or fill holes in the area.
 - **Models**: duplicate, group, hide, delete, ground and replace the selected models; the Inspector.
 - **Terrain**: clean up the tile under the camera, auto-paint, replace a texture everywhere, climb view.
 - **World**: Doodad Brushes, Ground Effects, Texture Looks, Zones, Lights.
+- **Tools**: the creature, game object, quest, item and spell editors, Icons, and **Scripts (Lua)**: a
+  window to write Lua scripts and run them on the open map, with Noggit Red's script API (`vec`,
+  `select_origin`, `sel:verts()` and `vert:set_height`, `sel:models()`, `add_m2`, `add_wmo`,
+  `random_from_seed`, the math functions) plus `target_pos()` (where the camera looks) and
+  `selected_area()` (the Select tool's area). What a script prints shows under it, and everything one
+  run changes is one undo step. Scripts are `.lua` files in the scripts folder
+  (`%AppData%\Meld\scripts` or `~/.config/Meld/scripts`); Ctrl+Enter runs, Ctrl+S saves. A script that
+  calls `brush()` loads into the Script brush tool instead. `make_noise` and `sel:make_noise` give noise
+  maps (SIMPLEX, PERLIN, VALUE, FRACTAL, CELLULAR, WHITE; FastNoise2's encoded trees fall back to
+  FRACTAL), `create_image` and `load_png` images (a path relative to the scripts folder, or a whole one).
+  Texture layers, vertex colours, water, holes and files are not in Meld yet.
 - **Import/Export**: heightmaps, watermaps, normal maps, alphamaps, object lists, doodad brushes,
   port coordinates, minimap image.
 - **View**: grid, chunk lines, a reference image (a plan of your own laid over the map to trace, and turned into heights, zones, textures or the mask), far horizon, walkable ground (the server's navmesh, built by Meld or read from the server's own mmaps) and a path test, layers (terrain, water, objects, tufts, spawns), hide panels.
@@ -124,10 +144,14 @@ Also included:
   - The ☀/☾ button next to the menus switches between day and night.
   - **Prop lights & flames**: torches, braziers, campfires, lamps and candles get animated flames
     and flickering light (up to 8 nearest lights).
-- **Camera**: follow the ground, collision, top-down view, minimap window, speed, bookmarks.
+- **Camera**: follow the ground, collision, top-down view, minimap (in the dock above Layers, or detached into a floating window), speed, bookmarks.
 - **Game**: launch the 1.12 client or Benilla, Game Login.
 - **Preferences**: WoW client folder, VMaNGOS and Benilla folders, game client and window, thumbnail
-  cache, camera speed, mouse sensitivity, invert camera Y, tablet support.
+  cache, camera speed, mouse sensitivity, interface size, toolbar icon size and side, invert camera Y,
+  tablet support, and the **Hotkey Manager**: every command and camera movement key with its keys,
+  changed with a click and a key press, cleared or reset (a key given to one command leaves any other
+  that had it). The keys the selection and the tools read themselves (Del, H, R, the arrows, Esc) and
+  the mouse stay fixed. The menus, the toolbar and Help › Keyboard Shortcuts show the keys you set.
 - **Help**: a help window (F1) with the tools, brushes, camera and view in short, the keyboard shortcuts, the manual (this file), the log and app info.
 
 The sky is a physically based atmosphere (or the client's own sky with Client Lighting) with a sun
@@ -147,10 +171,12 @@ Graphics and camera preferences are saved in the user config file
 
 All platforms:
 
-- Go ≥ 1.25
+- Go ≥ 1.26
 - Bun ≥ 1.4 (bun.sh); it runs the frontend tooling, so Node.js isn't needed
 - Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
 - Check with `wails doctor`
+- golangci-lint v2 for `make check` (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`); without it the lint is skipped
+- GNU Make; on Windows its recipes run through Git for Windows' `sh.exe`
 
 **Linux:** `gtk3` and `webkit2gtk-4.1` dev packages.
 
@@ -183,8 +209,9 @@ On Windows, natively: `wails build`. To build an NSIS installer: `wails build -n
 ### Tests & checks
 
 ```bash
-make test    # Go tests under internal/ and the frontend unit tests (node --test)
-make check   # go vet + svelte-check/tsc
+make test    # Go tests under internal/ and cmd/, and the frontend unit tests (bun test)
+make check   # gofmt, go vet, golangci-lint, bindings and notices checks, svelte-check/tsc
+make verify  # check + test + the build for this OS
 WOW_DIR=/path/to/WoW go test ./internal/wow/ -v   # integration test against a real 1.12 client
 ```
 
@@ -200,16 +227,22 @@ WOW_DIR=/path/to/WoW go test ./internal/wow/ -v   # integration test against a r
 ## Source layout
 
 ```
-main.go, app.go        Wails entry + bound Go API (file dialogs, save/load)
+main.go, app*.go       Wails entry + bound Go API (app.go: App and config; app_<area>.go: one file a seam)
 env_linux.go           Linux WebKitGTK workarounds
 internal/mapfile/      .wmap binary format (+ tests)
 internal/mpq/          Read-only MPQ reader (WoW 1.x archives)
 internal/wow/          BLP/M2/WMO decoders, creature looks, minimaps + /wow/* HTTP endpoints serving the local client
 internal/adt/          Reads and rewrites 1.12 tiles (terrain, textures, liquids, holes, ground effects)
 internal/vmangos/      Regions to and from the client, the world database, DBC tables, spawn SQL
-internal/game/         Closes and reopens Wow.exe or Benilla around an export
+internal/game/         Starts Wow.exe or Benilla (Launch), and the game's template caches
 internal/heightmap/    Heightmap PNGs
 internal/config/       Per-user settings (client, server and Benilla folders, preferences)
+internal/recovery/     Autosaved copies of maps with unsaved changes, offered again after a crash
+internal/sessionlog/   Each session's status lines, kept in a file for bug reports
+internal/handoff/      Large binary replies of bound methods, fetched by the page in one GET
+internal/sandbox/      Throwaway copies of the client's Data folder for the probes
+internal/testclient/   Finds the client and server the client-dependent Go tests read
+cmd/meldtool/          Read-only inspector for .wmap files, tiles, MPQs and the bound methods
 benilla-launcher/      Meld's launcher for Benilla (BENILLA.md)
 frontend/src/
   App.svelte           Layout + global shortcuts
@@ -223,4 +256,9 @@ frontend/src/
   lib/state/           Svelte rune state, undo history
   lib/io/              Bridge to Go (save/load), base64
   lib/wow/             Client for the /wow/* endpoints (lists, textures, meshes)
+  lib/ui/              Tool list, menu commands and keys, UI scale, virtual grids
+  lib/check/           File › Check Map's checks
+  lib/bench/           Generated benchmark maps
+frontend/tests/       Bun unit tests
+frontend/probes/      Checks in the live app (docs/TESTS.md)
 ```

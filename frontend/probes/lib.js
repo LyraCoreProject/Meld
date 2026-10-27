@@ -54,10 +54,24 @@ const P = {
 
 	/** An app module by path, through the URL the page loaded it from (a bare path gives a second copy). */
 	async app(path) {
-		const url = performance.getEntriesByType('resource').map((r) => r.name).find((n) => n.includes(path))
+		const url = performance
+			.getEntriesByType('resource')
+			.map((r) => r.name)
+			.find((n) => n.includes(path))
 		// A full resource buffer (250 entries by default; the runner raises it) drops the app's own URL.
 		if (!url && performance.getEntriesByType('resource').length >= 250) throw new Error(`P.app: ${path} is not among the page's resource entries, which may be truncated`)
 		return import(url ?? path)
+	},
+
+	/**
+	 * The runner calls this before every probe: Flying View, the camera the probes were written for (the
+	 * app's default before #750, which made Orbit View the default). A probe that wants Orbit View sets
+	 * `cameraFollowGround: true` (its scene's prefs, as `P.BENCH` does, or the pref itself).
+	 */
+	async flyingStart() {
+		const { prefs } = await P.state()
+		prefs.cameraFollowGround = false
+		await P.frames(1)
 	},
 
 	/** Loads a scene: a `Meld scene {...}` line, or its object. Its view is a flying camera unless the scene sets `cameraFollowGround` (see `lookAt`). */
@@ -195,11 +209,16 @@ const P = {
 
 	/** Steps frames until `fn()` is truthy, and returns it; throws after `timeout` ms, naming the longest stall. */
 	async until(fn, timeout = 300_000, what = 'the condition') {
+		if (typeof timeout !== 'number') throw new Error(`P.until: timeout must be a number of ms, got ${typeof timeout} (${String(timeout)}); the step name goes third`)
 		P.resetStalls()
 		window.__probeStep = `P.until: ${what}`
 		const end = performance.now() + timeout
 		for (;;) {
 			const v = fn()
+			if (v && typeof v.then === 'function') {
+				window.__probeStep = null
+				throw new Error(`P.until: the condition returned a Promise (${what}), which is always truthy; await inside the probe instead`)
+			}
 			if (v) {
 				window.__probeStep = null
 				return v
@@ -635,9 +654,13 @@ ${fs.slice(0, end)}
 				ranges[name] = [Math.min(...v), Math.max(...v)]
 			}
 			return {
-				mean: round(mean(cpu)), min: round(Math.min(...cpu)), max: round(Math.max(...cpu)),
-				calls: Math.round(mean(rs.map((r) => r.calls))), triangles: Math.round(mean(rs.map((r) => r.triangles))),
-				sections, ranges: { cpu: [Math.min(...cpu), Math.max(...cpu)], ...ranges },
+				mean: round(mean(cpu)),
+				min: round(Math.min(...cpu)),
+				max: round(Math.max(...cpu)),
+				calls: Math.round(mean(rs.map((r) => r.calls))),
+				triangles: Math.round(mean(rs.map((r) => r.triangles))),
+				sections,
+				ranges: { cpu: [Math.min(...cpu), Math.max(...cpu)], ...ranges },
 			}
 		}
 		const off = stat(runs.off)
@@ -768,6 +791,18 @@ ${fs.slice(0, end)}
 	 * to stop and measures it. `buildMs` is the map's build, `loadMs` that plus its models' loading.
 	 */
 	async benchMap(kind, count, scale = P.env('SCALE', 1)) {
+		const m = await P.loadBenchMap(kind, count, scale)
+		await P.frames(5)
+		const r = await P.perf()
+		return { ...m, ...P.perfSummary(r) }
+	},
+
+	/**
+	 * `P.benchMap` without the measurement: builds the map, flies to its view and waits for the client
+	 * reads to stop. For a probe that only needs the map: the measurement's windows of SwiftShader
+	 * frames take 25 to 70 s a map, most of such a probe's time.
+	 */
+	async loadBenchMap(kind, count, scale = P.env('SCALE', 1)) {
 		const { buildBenchMap, benchView, benchMap } = await P.app('/src/lib/bench/benchMaps.ts')
 		const { prefs } = await P.state()
 		const m = benchMap(kind)
@@ -779,9 +814,6 @@ ${fs.slice(0, end)}
 		benchView(P.e, kind)
 		await P.frames(2)
 		await P.settle()
-		const loadMs = Math.round(performance.now() - t0)
-		await P.frames(5)
-		const r = await P.perf()
 		return {
 			map: kind,
 			stresses: m.stresses,
@@ -791,8 +823,7 @@ ${fs.slice(0, end)}
 			objects: d.objects.objects.size,
 			spawns: d.spawnLayer.spawns.length,
 			buildMs,
-			loadMs,
-			...P.perfSummary(r),
+			loadMs: Math.round(performance.now() - t0),
 		}
 	},
 

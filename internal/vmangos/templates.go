@@ -71,8 +71,7 @@ type TemplateRecord struct {
 // columns the editor may change: all but the key (entry, patch).
 func parseColumns(raw []byte) []TemplateColumn {
 	var out []TemplateColumn
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-		f := strings.Split(strings.TrimRight(line, "\r"), "\t")
+	for _, f := range batchLines(raw) {
 		if len(f) < 3 || f[0] == "entry" || f[0] == "patch" {
 			continue
 		}
@@ -111,35 +110,35 @@ func templateColumns(db worldDB, table string) ([]TemplateColumn, error) {
 	return cols, nil
 }
 
-// unescapeBatch undoes mariadb's batch output escapes (\t, \n, \\, \0) in a field.
-func unescapeBatch(s string) string {
-	if !strings.Contains(s, `\`) {
-		return s
-	}
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] != '\\' || i+1 == len(s) {
-			b.WriteByte(s[i])
-			continue
-		}
-		i++
-		switch s[i] {
-		case 't':
-			b.WriteByte('\t')
-		case 'n':
-			b.WriteByte('\n')
-		case '0':
-			b.WriteByte(0)
-		default:
-			b.WriteByte(s[i])
-		}
-	}
-	return b.String()
-}
-
 // sqlQuote makes text an SQL string literal.
 func sqlQuote(s string) string {
 	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`, "\x00", `\0`, "\n", `\n`, "\r", `\r`).Replace(s) + "'"
+}
+
+// ColumnError is a Save refused for a value: Column names the column the editor shows (to open the
+// tab it is on), Message says why. The editors read Column rather than guess it from the message
+// (#597); the save bindings hand it to the page as their result's Refused, since Wails passes a
+// returned error to the page as its message only.
+type ColumnError struct {
+	Column  string `json:"column"`
+	Message string `json:"message"`
+}
+
+func (e *ColumnError) Error() string { return e.Message }
+
+// refuse is a ColumnError for column, its message formatted as fmt.Sprintf does.
+func refuse(column, format string, args ...any) error {
+	return &ColumnError{Column: column, Message: fmt.Sprintf(format, args...)}
+}
+
+// Refused is the first value err refuses, its Message the whole of err (every problem a Save found),
+// or nil when err refuses none.
+func Refused(err error) *ColumnError {
+	var ce *ColumnError
+	if !errors.As(err, &ce) {
+		return nil
+	}
+	return &ColumnError{Column: ce.Column, Message: err.Error()}
 }
 
 // sqlValue checks a value typed into the editor against its column and returns it as SQL.
@@ -152,24 +151,24 @@ func sqlValue(c TemplateColumn, v string) (string, error) {
 	case "int", "uint":
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			return "", fmt.Errorf("%s must be a whole number, not %q", c.Name, v)
+			return "", refuse(c.Name, "%s must be a whole number, not %q", c.Name, v)
 		}
 		if c.Kind == "uint" && n < 0 {
-			return "", fmt.Errorf("%s can't be negative", c.Name)
+			return "", refuse(c.Name, "%s can't be negative", c.Name)
 		}
 		if (c.Min != 0 || c.Max != 0) && (n < c.Min || n > c.Max) {
-			return "", fmt.Errorf("%s must be from %d to %d, not %d", c.Name, c.Min, c.Max, n)
+			return "", refuse(c.Name, "%s must be from %d to %d, not %d", c.Name, c.Min, c.Max, n)
 		}
 		return strconv.FormatInt(n, 10), nil
 	case "float":
 		f, err := strconv.ParseFloat(v, 64)
 		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
-			return "", fmt.Errorf("%s must be a number, not %q", c.Name, v)
+			return "", refuse(c.Name, "%s must be a number, not %q", c.Name, v)
 		}
 		return num(f), nil
 	}
 	if c.MaxLen > 0 && len(v) > c.MaxLen {
-		return "", fmt.Errorf("%s is longer than %d characters", c.Name, c.MaxLen)
+		return "", refuse(c.Name, "%s is longer than %d characters", c.Name, c.MaxLen)
 	}
 	return sqlQuote(v), nil
 }
@@ -194,31 +193,44 @@ func readTemplate(serverRoot, table, what string, entry int) (TemplateRecord, er
 	if err != nil {
 		return TemplateRecord{}, err
 	}
+	patch, values, err := readKeyedRow(db, table, "patch", "", cols, what, entry)
+	if err != nil {
+		return TemplateRecord{}, err
+	}
+	return TemplateRecord{Entry: entry, Patch: patch, Columns: cols, Values: values}, nil
+}
+
+// readKeyedRow reads the row of entry in table with the highest key (`patch` or `build`), among
+// those cond (an SQL condition, "" for all) lets through: its key and the columns cols by name,
+// NULL in a nullable column as "". what names the kind in the error for a missing entry.
+func readKeyedRow(db worldDB, table, key, cond string, cols []TemplateColumn, what string, entry int) (int, map[string]string, error) {
 	names := make([]string, len(cols))
 	for i, c := range cols {
 		names[i] = "`" + c.Name + "`"
 	}
-	raw, err := runSQL(db, fmt.Sprintf("SELECT `patch`, %s FROM %s WHERE entry = %d ORDER BY patch DESC LIMIT 1",
-		strings.Join(names, ", "), table, entry))
+	if cond != "" {
+		cond = " AND " + cond
+	}
+	raw, err := runSQL(db, fmt.Sprintf("SELECT `%s`, %s FROM `%s` WHERE `entry` = %d%s ORDER BY `%s` DESC LIMIT 1",
+		key, strings.Join(names, ", "), table, entry, cond, key))
 	if err != nil {
-		return TemplateRecord{}, err
+		return 0, nil, err
 	}
-	// Only the line end: empty last columns leave trailing tabs that are fields.
-	line := strings.TrimRight(string(raw), "\r\n")
-	f := strings.Split(line, "\t")
-	if line == "" || len(f) != len(cols)+1 {
-		return TemplateRecord{}, fmt.Errorf("the world database has no %s %d", what, entry)
+	rows := batchRows(raw, len(cols)+1)
+	if len(rows) == 0 {
+		return 0, nil, fmt.Errorf("the world database has no %s %d", what, entry)
 	}
-	rec := TemplateRecord{Entry: entry, Columns: cols, Values: make(map[string]string, len(cols))}
-	rec.Patch, _ = strconv.Atoi(f[0])
+	f := rows[0]
+	k := f.num(0)
+	values := make(map[string]string, len(cols))
 	for i, c := range cols {
 		v := f[i+1]
 		if v == "NULL" && c.Nullable {
 			v = ""
 		}
-		rec.Values[c.Name] = unescapeBatch(v)
+		values[c.Name] = v
 	}
-	return rec, nil
+	return k, values, nil
 }
 
 // ReadCreature reads creature template entry: its newest patch's row.
@@ -287,7 +299,11 @@ func SaveCreature(serverRoot string, entry, patch int, values map[string]string)
 	if err != nil || sql == "" {
 		return sql, err
 	}
-	return sql, runScript(db, sql)
+	if err := runScript(db, sql); err != nil {
+		return "", err
+	}
+	forgetDisplays()
+	return sql, nil
 }
 
 // SaveObject writes changed template values (by column) into game object template entry's row of
@@ -370,9 +386,13 @@ func createTemplate(serverRoot, table, what, name string, build func(cols []Temp
 // table's defaults: level 1, a warrior (class 1: the server has no stats for class 0, the column's
 // default), hostile to everyone (faction 14), no display.
 func CreateCreature(serverRoot string, base int, name string) (int, error) {
-	return createTemplate(serverRoot, creatureTable, "creature", name, func(cols []TemplateColumn, entry int, name string) (string, error) {
+	entry, err := createTemplate(serverRoot, creatureTable, "creature", name, func(cols []TemplateColumn, entry int, name string) (string, error) {
 		return createCreatureSQL(cols, entry, base, name)
 	})
+	if err == nil {
+		forgetDisplays()
+	}
+	return entry, err
 }
 
 // CreateObject adds a game object template named name under the first free entry and returns the
@@ -467,6 +487,14 @@ var (
 	displaysCache = map[string][]DisplayEntry{}
 )
 
+// forgetDisplays drops the cached creature display lists, after a creature template was saved or
+// made, since that changes which creatures use each display.
+func forgetDisplays() {
+	displaysMu.Lock()
+	defer displaysMu.Unlock()
+	clear(displaysCache)
+}
+
 // ListDisplays lists every creature display with a model, dressed as a spawn of it would be (no
 // equipment, standing), with the creature templates that use it when the world database can be
 // read (serverRoot "" or a database that is down leaves them out). The list is made once per client
@@ -512,7 +540,7 @@ type displayUse struct {
 // parseDisplayUses reads displayUsesSQL's rows (display, type, name).
 func parseDisplayUses(raw []byte) map[int]*displayUse {
 	out := map[int]*displayUse{}
-	for _, f := range tsvRows(raw, 3) {
+	for _, f := range batchRows(raw, 3) {
 		d, err1 := strconv.Atoi(f[0])
 		t, err2 := strconv.Atoi(f[1])
 		if err1 != nil || err2 != nil {

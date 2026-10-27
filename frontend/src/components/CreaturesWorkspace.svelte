@@ -1,14 +1,19 @@
 <script lang="ts">
+	import { idMenu, idOf } from '../lib/ui/copyId'
 	import { dialogFocus } from '../lib/ui/dialogFocus'
+	import { leaveField, takeEscape } from '../lib/state/escape'
 	import { ClassLevelStats, CreateCreature, EquipmentFor, Factions, ReadCreature, SaveCreature, SearchCreatures, SpawnLook } from '../../wailsjs/go/main/App'
 	import type { vmangos } from '../../wailsjs/go/models'
 	import { untrack } from 'svelte'
 	import { editor, setStatus, ui } from '../lib/state/editor.svelte'
+	import { askConfirm } from '../lib/state/confirm'
 	import { creatureTemplateOf } from '../lib/world/spawnEdits'
 	import { CREATURE_TYPES, levelText, NPC_FLAGS, RANKS } from '../lib/world/spawnInfo'
+	import ClassIcon from './ClassIcon.svelte'
 	import CreaturePreview from './CreaturePreview.svelte'
-	import DisplayPicker from './DisplayPicker.svelte'
-	import WeaponPicker, { SLOTS } from './WeaponPicker.svelte'
+	import DisplayPicker, { forgetCreatureDisplays } from './DisplayPicker.svelte'
+	import ItemIcon from './ItemIcon.svelte'
+	import WeaponPicker, { loadWeapons, SLOTS } from './WeaponPicker.svelte'
 
 	// The Creatures workspace (#132, World › Creatures…): the world database's creatures to find and
 	// open in the creature editor, and a guide that makes a new one step by step: who it is, whom it
@@ -62,8 +67,8 @@
 	let making = $state(false)
 	let made = $state<{ entry: number; values: Record<string, string> } | null>(null)
 
-	function close() {
-		if (step > 0 && !made && draft.name && !confirm('Leave the guide? The creature is not made yet.')) return
+	async function close() {
+		if (step > 0 && !made && draft.name && !(await askConfirm('Leave the guide? The creature is not made yet.', { title: 'Leave the guide', ok: 'Leave' }))) return
 		ui.creatures = false
 	}
 
@@ -113,9 +118,7 @@
 			.then((f) => (factions = f ?? []))
 			.catch((err) => (error = String(err)))
 	})
-	const sideFactions = $derived(
-		factions.filter((f) => offered(f) && f.alliance === SIDES[side].alliance && f.horde === SIDES[side].horde && (!factionQuery.trim() || f.name.toLowerCase().includes(factionQuery.trim().toLowerCase()))),
-	)
+	const sideFactions = $derived(factions.filter((f) => offered(f) && f.alliance === SIDES[side].alliance && f.horde === SIDES[side].horde && (!factionQuery.trim() || f.name.toLowerCase().includes(factionQuery.trim().toLowerCase()))))
 	/** A faction a creature can take: named, and not one of the players' own (PLAYER, Human …). */
 	const offered = (f: vmangos.FactionInfo) => f.name !== '' && !f.name.startsWith('PLAYER')
 	const pickedFaction = $derived(factions.find((f) => f.id === draft.faction) ?? null)
@@ -128,6 +131,17 @@
 	// Step 3: the look shown, the picked display dressed in the picked gear.
 	let hovered = $state<vmangos.DisplayEntry | null>(null)
 	let slot = $state(0)
+	// The names and displays of the holdable items, for the gear's names and icons (read once).
+	let weaponNames = $state<Map<number, string>>(new Map())
+	let weaponDisplays = $state<Map<number, number>>(new Map())
+	loadWeapons()
+		.then((list) => {
+			weaponNames = new Map(list.map((w) => [w.entry, w.name]))
+			weaponDisplays = new Map(list.map((w) => [w.entry, w.display]))
+		})
+		.catch(() => {})
+	const itemName = (entry: number) => (weaponNames.get(entry) ?? `Item ${entry}`).replace(/^monster\s*-\s*/i, '')
+
 	let equipment = $state(0)
 	let look = $state<vmangos.LookResult | null>(null)
 	$effect(() => {
@@ -151,19 +165,15 @@
 			.then((l) => (look = l))
 			.catch(() => (look = null))
 	})
-	const preview = $derived(
-		hovered
-			? { model: hovered.model, look: hovered.look, scale: hovered.scale * draft.scale }
-			: look
-				? { model: look.model, look: look.look, scale: draft.scale * (look.displayScale || 1) }
-				: null,
-	)
+	const preview = $derived(hovered ? { model: hovered.model, look: hovered.look, scale: hovered.scale * draft.scale } : look ? { model: look.model, look: look.look, scale: draft.scale * (look.displayScale || 1) } : null)
 
 	// Step 4: what the server gives the class at the level range, times the multipliers.
 	let stats = $state<vmangos.ClassLevelStats[]>([])
 	$effect(() => {
 		if (!ui.creatures) return
-		const c = draft.unitClass, a = draft.levelMin, b = Math.max(draft.levelMin, draft.levelMax)
+		const c = draft.unitClass,
+			a = draft.levelMin,
+			b = Math.max(draft.levelMin, draft.levelMax)
 		ClassLevelStats(c, a, b)
 			.then((s) => (stats = s ?? []))
 			.catch(() => (stats = []))
@@ -214,6 +224,7 @@
 			const entry = await CreateCreature(0, v.name)
 			const rec = await ReadCreature(entry)
 			await SaveCreature(entry, rec.patch, v)
+			forgetCreatureDisplays()
 			made = { entry, values: { ...rec.values, ...v } }
 			setStatus(`Made creature ${entry}, ${v.name}. Restart the world server to see it in the game.`, 10000)
 		} catch (err) {
@@ -235,22 +246,20 @@
 	const toggleRole = (bit: number, on: boolean) => (draft.npcFlags = on ? draft.npcFlags | bit : draft.npcFlags & ~bit)
 	const chip = (r: string) => (r === 'friendly' ? 'ok' : r === 'hostile' ? 'bad' : 'mid')
 
+	let root = $state<HTMLElement>()
+
 	function onKey(e: KeyboardEvent) {
-		if (!ui.creatures || e.key !== 'Escape') return
-		const el = e.target as HTMLElement | null
-		if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA')) {
-			el.blur()
-			return
-		}
+		if (!ui.creatures || e.key !== 'Escape' || !takeEscape(e, root)) return
+		if (leaveField(e)) return
 		e.preventDefault()
-		close()
+		void close()
 	}
 </script>
 
 <svelte:window onkeydown={onKey} />
 
 {#if ui.creatures}
-	<div class="ws" role="dialog" aria-modal="true" aria-label="Creatures" use:dialogFocus>
+	<div class="ws" role="dialog" aria-modal="true" aria-label="Creatures" bind:this={root} use:dialogFocus>
 		<header>
 			<h2>Creatures</h2>
 			<span class="dim">Find a creature to edit, or make a new one step by step.</span>
@@ -264,7 +273,7 @@
 				<ul class="found">
 					{#each found as c (c.entry)}
 						<li>
-							<button onclick={() => open(c.entry)} title="Open in the creature editor">
+							<button onclick={() => open(c.entry)} use:idMenu={{ ids: [idOf('creature', c.entry)], name: c.name }} title="Open in the creature editor">
 								<span>{c.name}{c.subname ? ` <${c.subname}>` : ''}</span>
 								<span class="dim">{c.entry} · level {levelText(c.levelMin, c.levelMax)}</span>
 							</button>
@@ -344,8 +353,9 @@
 								<h3>Held items</h3>
 								<span class="row">
 									<select bind:value={slot}>
-										{#each SLOTS as s, i (s)}<option value={i}>{s}{draft.items[i] ? ` (item ${draft.items[i]})` : ''}</option>{/each}
+										{#each SLOTS as s, i (s)}<option value={i}>{s}{draft.items[i] ? ` (${itemName(draft.items[i])})` : ''}</option>{/each}
 									</select>
+									{#if draft.items[slot]}<ItemIcon displayId={weaponDisplays.get(draft.items[slot]) ?? 0} size={14} />{/if}
 									<button disabled={!draft.items[slot]} onclick={() => (draft.items[slot] = 0)}>Empty hand</button>
 								</span>
 								<WeaponPicker which={slot} selected={draft.items[slot]} onpick={(e) => (draft.items[slot] = e)} />
@@ -363,7 +373,7 @@
 						<p class="dim">The server gives a creature its health, damage and armour from its class and level; the multipliers make it tougher or weaker. The rank set them; change them as you like.</p>
 						<div class="sides">
 							{#each CLASSES as [v, name, what] (v)}
-								<label class="check"><input type="radio" name="class" checked={draft.unitClass === v} onchange={() => (draft.unitClass = v)} /> {name} <span class="dim">({what})</span></label>
+								<label class="check"><input type="radio" name="class" checked={draft.unitClass === v} onchange={() => (draft.unitClass = v)} /><ClassIcon id={v} /> {name} <span class="dim">({what})</span></label>
 							{/each}
 						</div>
 						<span class="row">
@@ -398,12 +408,25 @@
 						{:else}
 							<p class="dim">Check it over, then make it. It gets the first free entry.</p>
 							<dl>
-								<dt>Name</dt><dd>{draft.name}{draft.subname ? ` <${draft.subname}>` : ''}</dd>
-								<dt>Does</dt><dd>{ROLES.filter(([b]) => draft.npcFlags & b).map(([, n]) => n).join(', ') || 'nothing for players'}</dd>
-								<dt>Level</dt><dd>{levelText(draft.levelMin, Math.max(draft.levelMin, draft.levelMax))}, {RANKS[draft.rank]}, {CREATURE_TYPES[draft.type]}</dd>
-								<dt>Faction</dt><dd>{pickedFaction ? `${pickedFaction.name} (${pickedFaction.id}): ${pickedFaction.alliance} to the Alliance, ${pickedFaction.horde} to the Horde` : draft.faction}</dd>
-								<dt>Looks</dt><dd>display {draft.display}, size {draft.scale}{draft.items.some((i) => i) ? `, holding ${draft.items.filter((i) => i).join(', ')}` : ''}</dd>
-								<dt>Strength</dt><dd>{CLASSES.find(([v]) => v === draft.unitClass)?.[1]}, health ×{draft.healthMul}, damage ×{draft.damageMul}, armour ×{draft.armorMul}</dd>
+								<dt>Name</dt>
+								<dd>{draft.name}{draft.subname ? ` <${draft.subname}>` : ''}</dd>
+								<dt>Does</dt>
+								<dd>
+									{ROLES.filter(([b]) => draft.npcFlags & b)
+										.map(([, n]) => n)
+										.join(', ') || 'nothing for players'}
+								</dd>
+								<dt>Level</dt>
+								<dd>{levelText(draft.levelMin, Math.max(draft.levelMin, draft.levelMax))}, {RANKS[draft.rank]}, {CREATURE_TYPES[draft.type]}</dd>
+								<dt>Faction</dt>
+								<dd>{pickedFaction ? `${pickedFaction.name} (${pickedFaction.id}): ${pickedFaction.alliance} to the Alliance, ${pickedFaction.horde} to the Horde` : draft.faction}</dd>
+								<dt>Looks</dt>
+								<dd>
+									display {draft.display}, size {draft.scale}{#if draft.items.some((i) => i)}, holding
+										{#each draft.items.filter((i) => i) as it, n (n)}{n ? ', ' : ''}<ItemIcon displayId={weaponDisplays.get(it) ?? 0} size={14} /> {itemName(it)}{/each}{/if}
+								</dd>
+								<dt>Strength</dt>
+								<dd>{CLASSES.find(([v]) => v === draft.unitClass)?.[1]}, health ×{draft.healthMul}, damage ×{draft.damageMul}, armour ×{draft.armorMul}</dd>
 							</dl>
 						{/if}
 					{/if}
@@ -583,13 +606,13 @@
 		border-radius: var(--radius);
 	}
 	.ok {
-		color: #6fdc6f;
+		color: var(--ok);
 	}
 	.mid {
-		color: #ffd23f;
+		color: var(--warn);
 	}
 	.bad {
-		color: #ff6b6b;
+		color: var(--bad);
 	}
 	.looks {
 		display: flex;

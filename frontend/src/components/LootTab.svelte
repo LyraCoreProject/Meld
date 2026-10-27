@@ -1,11 +1,13 @@
 <script lang="ts">
+	import { idMenu, idOf } from '../lib/ui/copyId'
 	import { NextObjectLoot, ReadObjectLoot, SaveObjectLoot, SearchItems } from '../../wailsjs/go/main/App'
 	import { vmangos } from '../../wailsjs/go/models'
 	import { setStatus } from '../lib/state/editor.svelte'
+	import { RowList } from '../lib/ui/rowList.svelte'
 	import { engineRef } from '../lib/state/engineRef'
 	import { spawnKey } from '../lib/world/SpawnLayer'
 	import { objectTypeName } from '../lib/world/spawnInfo'
-	import { QUALITY_COLORS } from '../lib/wow/itemTooltip'
+	import { QUALITY_VARS } from '../lib/wow/itemTooltip'
 	import ItemIcon from './ItemIcon.svelte'
 	import ItemTooltip from './ItemTooltip.svelte'
 
@@ -37,65 +39,43 @@
 	}
 	let { entry, name, type, loot, consumed, restock, spawn, onmakechest, onsetloot, onset, dirty = $bindable(false) }: Props = $props()
 
-	const QUALITY = QUALITY_COLORS
+	const QUALITY = QUALITY_VARS
 	const container = $derived(type === 3 || type === 25)
 
-	let items = $state<vmangos.LootItem[]>([])
-	let users = $state<vmangos.LootUser[]>([])
-	let spawns = $state(0)
-	/** The loot list the rows are edited for, and the one (with its rows) the database has them for. */
-	let listFor = $state(0)
-	let savedFor = $state(0)
-	let savedKey = $state('[]')
-	let loading = $state(false)
-	let error = $state('')
-
-	const key = (list: vmangos.LootItem[]) => JSON.stringify(list.map((i) => [i.item, i.chance, i.group, i.minCount, i.maxCount, i.condition, i.patchMin, i.patchMax]))
+	/** The loot list the rows are edited for, its rows, and the objects and spawns that hold it too. */
+	type Loot = { list: number; items: vmangos.LootItem[]; users: vmangos.LootUser[]; spawns: number }
+	const rows = new RowList<Loot>({
+		empty: { list: 0, items: [], users: [], spawns: 0 },
+		read: async () => {
+			const r = await ReadObjectLoot(entry, loot)
+			return { list: loot, items: r.items ?? [], users: r.users ?? [], spawns: r.spawns }
+		},
+		// The list leads the key, so the list the database has the rows for can be read back from it.
+		key: (l) => `${l.list}|${JSON.stringify(l.items.map((i) => [i.item, i.chance, i.group, i.minCount, i.maxCount, i.condition, i.patchMin, i.patchMax]))}`,
+	})
+	const items = $derived(rows.rows.items)
+	const listFor = $derived(rows.rows.list)
+	const users = $derived(rows.rows.users)
+	const spawns = $derived(rows.rows.spawns)
+	const savedFor = $derived(Number(rows.saved.slice(0, rows.saved.indexOf('|'))))
 	$effect(() => {
-		dirty = listFor > 0 && (listFor !== savedFor || key(items) !== savedKey)
+		dirty = listFor > 0 && rows.dirty
 	})
 
 	// The rows follow the object and its loot list; a list this tab picked itself (a copy) keeps them.
-	let shownFor = ''
-	let token = 0
-	$effect(() => {
-		const id = `${entry}|${loot}`
-		if (id === shownFor) return
-		shownFor = id
-		void load(entry, loot)
-	})
-
-	async function load(e: number, l: number) {
-		const mine = ++token
-		loading = true
-		error = ''
-		try {
-			const r = await ReadObjectLoot(e, l)
-			if (mine !== token) return
-			items = r.items ?? []
-			users = r.users ?? []
-			spawns = r.spawns
-			listFor = savedFor = l
-			savedKey = key(items)
-		} catch (err) {
-			if (mine === token) error = String(err)
-		} finally {
-			if (mine === token) loading = false
-		}
-	}
+	rows.follow(() => `${entry}|${loot}`)
 
 	/** Drops the unsaved rows: reads the list the object points at again. */
 	export function revert() {
-		shownFor = `${entry}|${loot}`
-		void load(entry, loot)
+		rows.followed = `${entry}|${loot}`
+		void rows.revert()
 	}
 
 	/** Writes the rows into their list; returns how many it saved, or -1 when nothing needed saving. */
 	export async function save(): Promise<number> {
 		if (!dirty) return -1
 		await SaveObjectLoot(listFor, items)
-		savedFor = listFor
-		savedKey = key(items)
+		rows.markSaved()
 		return items.length
 	}
 
@@ -103,13 +83,13 @@
 	async function ownCopy() {
 		try {
 			const id = await NextObjectLoot()
-			shownFor = `${entry}|${id}`
-			listFor = id
-			users = []
+			rows.followed = `${entry}|${id}`
+			rows.rows.list = id
+			rows.rows.users = []
 			onsetloot(id)
 			setStatus(`${name} now has loot list ${id}, a copy of the shared one. Save to keep it.`, 8000)
 		} catch (err) {
-			error = String(err)
+			rows.error = String(err)
 		}
 	}
 
@@ -117,12 +97,12 @@
 		try {
 			onsetloot(await NextObjectLoot())
 		} catch (err) {
-			error = String(err)
+			rows.error = String(err)
 		}
 	}
 
 	function remove(item: number) {
-		items = items.filter((i) => i.item !== item)
+		rows.rows.items = items.filter((i) => i.item !== item)
 	}
 
 	const int = (v: string, lo: number, hi: number) => {
@@ -162,7 +142,7 @@
 				const r = await SearchItems(q)
 				if (q === query.trim()) results = r ?? []
 			} catch (err) {
-				error = String(err)
+				rows.error = String(err)
 			} finally {
 				searching = false
 			}
@@ -174,10 +154,7 @@
 			setStatus(`${r.name} is already in the contents.`, 4000)
 			return
 		}
-		items = [
-			...items,
-			vmangos.LootItem.createFrom({ item: r.entry, name: r.name, quality: r.quality, displayId: r.displayId, chance: 100, group: 0, minCount: 1, maxCount: 1, condition: 0, patchMin: 0, patchMax: 10 }),
-		]
+		rows.rows.items = [...items, vmangos.LootItem.createFrom({ item: r.entry, name: r.name, quality: r.quality, displayId: r.displayId, chance: 100, group: 0, minCount: 1, maxCount: 1, condition: 0, patchMin: 0, patchMax: 10 })]
 	}
 
 	// The item under the pointer, for its tooltip.
@@ -204,7 +181,7 @@
 </script>
 
 <div class="loot">
-	{#if error}<p class="error">{error}</p>{/if}
+	{#if rows.error}<p class="error">{rows.error}</p>{/if}
 
 	{#if !container}
 		<p>A {objectTypeName(type).toLowerCase()} holds nothing: only a chest (veins and herbs are chests too) or a fishing hole has contents.</p>
@@ -230,7 +207,7 @@
 				</p>
 				<ul class="users">
 					{#each users.slice(0, 8) as u (u.entry)}
-						<li>{u.name} <span class="dim">entry {u.entry} · {spawnWord(u.spawns)}</span></li>
+						<li use:idMenu={{ ids: [idOf('object', u.entry)], name: u.name }}>{u.name} <span class="dim">entry {u.entry} · {spawnWord(u.spawns)}</span></li>
 					{/each}
 					{#if users.length > 8}<li class="dim">and {users.length - 8} more</li>{/if}
 				</ul>
@@ -244,7 +221,7 @@
 			<h3>Holds{items.length ? ` (${items.length})` : ''}</h3>
 			<span class="dim">loot list {loot}{spawns ? ` · ${spawnWord(spawns)} of ${name}` : ''}</span>
 		</div>
-		{#if loading}
+		{#if rows.loading}
 			<p class="dim">Loading the contents…</p>
 		{:else if items.length === 0}
 			<p class="dim">Nothing yet. Find items below and click one to add it.</p>
@@ -264,9 +241,11 @@
 					{#each showAll ? shown : shown.slice(0, LIMIT) as it (it.item)}
 						<tr>
 							{#if it.minCount < 0}
-								<td class="item" title="A reference: the rows of reference_loot_template {-it.minCount}, rolled {it.maxCount} {it.maxCount === 1 ? 'time' : 'times'}">Reference list {-it.minCount} <span class="dim">×{it.maxCount}</span></td>
+								<td class="item" title="A reference: the rows of reference_loot_template {-it.minCount}, rolled {it.maxCount} {it.maxCount === 1 ? 'time' : 'times'}"
+									>Reference list {-it.minCount} <span class="dim">×{it.maxCount}</span></td
+								>
 							{:else}
-								<td class="item" {...hoverItem(it.item, it.displayId)}>
+								<td class="item" use:idMenu={{ ids: [idOf('item', it.item)], name: it.name }} {...hoverItem(it.item, it.displayId)}>
 									<ItemIcon displayId={it.displayId} />
 									<span style:color={QUALITY[it.quality] ?? QUALITY[1]}>{it.name || '(unknown item)'}</span>
 									<span class="dim">{it.item}{it.chance < 0 ? ' · quest' : ''}</span>
@@ -298,7 +277,7 @@
 			<ul class="results">
 				{#each results as r (r.entry)}
 					<li>
-						<button disabled={items.some((i) => i.item === r.entry)} onclick={() => add(r)} {...hoverItem(r.entry, r.displayId)}>
+						<button disabled={items.some((i) => i.item === r.entry)} onclick={() => add(r)} use:idMenu={{ ids: [idOf('item', r.entry)], name: r.name }} {...hoverItem(r.entry, r.displayId)}>
 							<ItemIcon displayId={r.displayId} /> <span style:color={QUALITY[r.quality] ?? QUALITY[1]}>{r.name}</span> <span class="dim">{r.entry}</span>
 						</button>
 					</li>
@@ -325,9 +304,27 @@
 		{#if spawn}
 			<label class="inline">
 				This spawn respawns after
-				<input type="number" min="0" step="10" value={spawn.respawnSecs} onchange={(e) => { const v = secs(e); if (v !== null) respawn(v, Math.max(v, spawn.respawnMaxSecs)) }} />
+				<input
+					type="number"
+					min="0"
+					step="10"
+					value={spawn.respawnSecs}
+					onchange={(e) => {
+						const v = secs(e)
+						if (v !== null) respawn(v, Math.max(v, spawn.respawnMaxSecs))
+					}}
+				/>
 				to
-				<input type="number" min="0" step="10" value={spawn.respawnMaxSecs} onchange={(e) => { const v = secs(e); if (v !== null) respawn(spawn.respawnSecs, v) }} />
+				<input
+					type="number"
+					min="0"
+					step="10"
+					value={spawn.respawnMaxSecs}
+					onchange={(e) => {
+						const v = secs(e)
+						if (v !== null) respawn(spawn.respawnSecs, v)
+					}}
+				/>
 				s
 			</label>
 			<p class="dim">The respawn time is the spawn's own (gameobject.spawntimesecsmin/max): an undo step, saved with the region's spawns.</p>

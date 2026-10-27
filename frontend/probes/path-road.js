@@ -1,4 +1,6 @@
 // Path tool (#167): clicks drop a road's points, a click on a point picks it and Shift+drag raises it, Apply levels and paints along the curve as one undo step, and applying again after an edit takes the first apply back.
+// touches: frontend/src/lib/tools/PathTool.ts, frontend/src/lib/tools/pathApply.ts, frontend/src/lib/terrain/paths.ts, frontend/src/components/PathEditBar.svelte
+// tier: smoke
 const e = P.e
 const { editor } = await P.state()
 e.newDocument(256, 'flat', 0, 'Probe')
@@ -14,7 +16,12 @@ const share = (x, y, z) => {
 }
 const close = (a, b, d = 0.05) => Math.abs(a - b) <= d
 
-for (const [x, z] of [[190, 256], [256, 290], [322, 256]]) await P.click(...share(x, h0, z))
+for (const [x, z] of [
+	[190, 256],
+	[256, 290],
+	[322, 256],
+])
+	await P.click(...share(x, h0, z))
 const drawn = editor.paths.length === 1 && editor.paths[0].points.length === 3
 const steps = e.history.steps().map((s) => s.label)
 
@@ -48,7 +55,10 @@ e.path((t2, c) => t2.apply(c))
 await P.frames(1)
 const humpAfter = t.heightAt(256, 290) - h0
 const lineAfter = t.heightAt(256, 256) - h0
-const labels = e.history.steps().map((s) => s.label).slice(-2)
+const labels = e.history
+	.steps()
+	.map((s) => s.label)
+	.slice(-2)
 e.history.undo()
 e.history.undo()
 await P.frames(1)
@@ -56,9 +66,9 @@ const humpUndone = t.heightAt(256, 290) - h0
 e.history.undo()
 await P.frames(1)
 const flatAgain = t.heightAt(256, 290) - h0
-// The paths travel to the map file and back through mapio (the Go side's round trip is mapfile_test).
-const mapio = await P.app('/src/lib/io/mapio.ts')
-const back = mapio.fromMapData(JSON.parse(JSON.stringify(mapio.toMapData(e.snapshot())))).paths
+// The paths travel to the map file and back through mapData.ts (the Go side's round trip is mapfile_test).
+const mapData = await P.app('/src/lib/io/mapData.ts')
+const back = mapData.fromMapData(JSON.parse(JSON.stringify(mapData.toMapData(e.snapshot())))).paths
 const saved = back.length === 1 && back[0].points.length === editor.paths[0].points.length && back[0].width === 10 && back[0].texture === editor.palette[slot]
 return {
 	ok: drawn && picked && raised > 5 && hump > 4 && painted > 200 && close(offRoad, 0) && close(humpAfter, 0) && close(lineAfter, 0) && close(humpUndone, hump) && close(flatAgain, 0) && saved && labels[1] === 'Apply Road 1 again',

@@ -5,11 +5,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math"
-	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"Meld/internal/adt"
 	"Meld/internal/mpq"
+	"Meld/internal/testclient"
 	"Meld/internal/wow"
 )
 
@@ -100,10 +102,7 @@ func TestNewObjectGoesToItsTile(t *testing.T) {
 // when the client has never had the tile compiled, since the builder orders an MCNK's subchunks its own
 // way; TestClientWMOOnlyRegion has the unchanged case.) It needs WOW_DIR.
 func TestRegionPending(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -124,10 +123,7 @@ func TestRegionPending(t *testing.T) {
 // TestRegionNoEditRoundTrip reads a real region of the client and writes it back unedited. The
 // placements and heights must come out as they went in. It needs WOW_DIR set to the client.
 func TestRegionNoEditRoundTrip(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -141,9 +137,24 @@ func TestRegionNoEditRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 5 || files[4].Name != wdlPath("Azeroth") {
+	// The block's tiles come first and the WDL last. Between them sit the tiles outside the block that
+	// list a model an earlier compile moved (#647), so their number depends on the client's patch.
+	if len(files) < 5 || files[len(files)-1].Name != wdlPath("Azeroth") {
 		t.Fatalf("a 2x2 region writes 4 tiles and the WDL, got %d files", len(files))
 	}
+	for k, f := range files[:len(files)-1] {
+		inBlock := k < view.Size*view.Size
+		isBlockTile := false
+		for j := 0; j < view.Size; j++ {
+			for i := 0; i < view.Size; i++ {
+				isBlockTile = isBlockTile || strings.EqualFold(f.Name, adt.TilePath("Azeroth", view.X+i, view.Y+j, ""))
+			}
+		}
+		if inBlock != isBlockTile || !strings.EqualFold(filepath.Ext(f.Name), ".adt") {
+			t.Fatalf("file %d is %s: the block's 4 tiles come first, then only tiles outside it", k, f.Name)
+		}
+	}
+	wdl := files[len(files)-1]
 	// The same edit builds the same bytes, so a save with nothing edited finds every file unchanged.
 	twice, err := BuildRegion(dataDir, edit)
 	if err != nil {
@@ -168,7 +179,7 @@ func TestRegionNoEditRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now, err := ParseWDL(files[4].Data)
+	now, err := ParseWDL(wdl.Data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +231,7 @@ func TestRegionNoEditRoundTrip(t *testing.T) {
 		for _, p := range after {
 			found := false
 			for _, o := range view.Objects {
-				if o.Type == modelType(p.Kind, p.Name, p.DoodadSet) {
+				if o.Type == adt.ModelType(p.Kind, p.Name, p.DoodadSet) {
 					if math.Abs(float64(o.X+float32(view.X)*adt.TileSize-p.Position[0])) < 0.05 &&
 						math.Abs(float64(o.Z+float32(view.Y)*adt.TileSize-p.Position[2])) < 0.05 {
 						found = true
@@ -233,7 +244,9 @@ func TestRegionNoEditRoundTrip(t *testing.T) {
 			}
 		}
 		// The write's outer heights are the editor's, and each inner sample moves by the average
-		// change of the four outer samples around it, from the original tile.
+		// change of the four outer samples around it, from the original tile. A cell whose corners
+		// the editor's view moved off the original (an edit Meld's patch already holds, #631) is a
+		// sculpted cell, and its inner sample sits at its corners' mean (#380).
 		base, err := adt.ParseTerrain(original)
 		if err != nil {
 			t.Fatal(err)
@@ -262,6 +275,13 @@ func TestRegionNoEditRoundTrip(t *testing.T) {
 				for col := 0; col < adt.CellsPerChunk; col++ {
 					avg := (delta[r][col] + delta[r][col+1] + delta[r+1][col] + delta[r+1][col+1]) / 4
 					want := float64(cb.Heights[r*17+9+col]) + avg
+					for _, d := range [4]float64{delta[r][col], delta[r][col+1], delta[r+1][col], delta[r+1][col+1]} {
+						if sculpted(float32(d)) {
+							h := &cw.Heights
+							want = float64((h[r*17+col] + h[r*17+col+1] + h[(r+1)*17+col] + h[(r+1)*17+col+1]) / 4)
+							break
+						}
+					}
 					if math.Abs(float64(cw.Heights[r*17+9+col])-want) > 1e-3 {
 						t.Fatalf("tile %d_%d chunk %d inner %d,%d: wrote %v, want %v", tx, ty, c, r, col, cw.Heights[r*17+9+col], want)
 					}
@@ -288,10 +308,7 @@ func TestRegionNoEditRoundTrip(t *testing.T) {
 // TestRegionMoveRoundTrip moves one model of a real region and checks that the write puts it at
 // the new place, under the same unique ID and with its tilt kept. It needs WOW_DIR set.
 func TestRegionMoveRoundTrip(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -343,10 +360,7 @@ func TestRegionMoveRoundTrip(t *testing.T) {
 // TestRegionReadsWater reads a client tile with ocean (tile 29_44 of Azeroth) and checks its water
 // comes through in the block's chunk indexes. It needs WOW_DIR set to the client.
 func TestRegionReadsWater(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -372,10 +386,7 @@ func TestRegionReadsWater(t *testing.T) {
 // TestRegionPaintWritten paints the first chunk of a real tile with one texture and checks the
 // written tile names it. It needs WOW_DIR set to the client.
 func TestRegionPaintWritten(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -408,15 +419,66 @@ func TestRegionPaintWritten(t *testing.T) {
 	}
 }
 
+// TestBaseRegionPaintSkipsMeldsPatch reads a 2x2 block's paint without Meld's patch: each tile's
+// layers and alpha maps must be the ones BaseTileRoot's file has, placed in the block as ReadRegion
+// places them (#645). It needs WOW_DIR set to the client.
+func TestBaseRegionPaintSkipsMeldsPatch(t *testing.T) {
+	dir := testclient.DataDir(t)
+	dataDir, err := wow.ResolveDataDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const x, y, size = 32, 48, 2
+	view, err := ReadBaseRegionPaint(dataDir, "Azeroth", x, y, size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Chunks) != size*size*adt.ChunkCount {
+		t.Fatalf("%d chunks, want %d", len(view.Chunks), size*size*adt.ChunkCount)
+	}
+	at, c := 0, 0
+	for j := 0; j < size; j++ {
+		for i := 0; i < size; i++ {
+			root, err := BaseTileRoot(dataDir, "Azeroth", x+i, y+j)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tile, err := viewOf(root, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tile.Chunks {
+				got := view.Chunks[c]
+				c++
+				if got.IndexX != want.IndexX+i*adt.ChunksPerTile || got.IndexY != want.IndexY+j*adt.ChunksPerTile {
+					t.Fatalf("tile %d,%d chunk %d,%d placed at %d,%d", i, j, want.IndexX, want.IndexY, got.IndexX, got.IndexY)
+				}
+				if len(got.Layers) != len(want.Layers) {
+					t.Fatalf("tile %d,%d chunk %d,%d: %d layers, the base tile has %d", i, j, want.IndexX, want.IndexY, len(got.Layers), len(want.Layers))
+				}
+				for k := range want.Layers {
+					if got.Layers[k] != want.Layers[k] {
+						t.Fatalf("tile %d,%d chunk %d,%d layer %d: %+v, the base tile has %+v", i, j, want.IndexX, want.IndexY, k, got.Layers[k], want.Layers[k])
+					}
+				}
+			}
+			if !bytes.Equal(view.Alpha[at:at+len(tile.Alpha)], tile.Alpha) {
+				t.Fatalf("tile %d,%d: the alpha maps are not the base tile's", i, j)
+			}
+			at += len(tile.Alpha)
+		}
+	}
+	if at != len(view.Alpha) {
+		t.Fatalf("the view has %d alpha bytes, its tiles %d", len(view.Alpha), at)
+	}
+}
+
 // TestRegionUnpaintedChunksKeepClientAlpha sends every chunk of a real tile back with the weights the
 // editor reads from it (ClientWeights, which tileImport.test.ts pins to tilePaint), as Compile does:
 // the tile must come out as the same save without paint writes it, byte for byte, where before #526
 // every chunk's alpha came back at half resolution. It needs WOW_DIR set to the client.
 func TestRegionUnpaintedChunksKeepClientAlpha(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -471,10 +533,7 @@ func TestRegionUnpaintedChunksKeepClientAlpha(t *testing.T) {
 // writes. It needs WOW_DIR set to
 // the client.
 func TestRegionHeadersWritten(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -493,8 +552,9 @@ func TestRegionHeadersWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Block chunk 17 is the tile's chunk (1, 1).
+	impassable := true
 	edit := RegionEdit{MapName: view.MapName, X: view.X, Y: view.Y, Size: view.Size, Heights: EncodeHeights(view.Heights), Objects: view.Objects,
-		Headers: []HeaderSpec{{Chunk: 17, AreaID: 40, Impassable: true, NoEffect: []int{3, 0, 0, 0, 0, 0, 0, 0x80}, Holes: []int{0, 0, 0, 0, 0, 0, 1, 0}}}}
+		Headers: []HeaderSpec{{Chunk: 17, AreaID: 40, Impassable: &impassable, NoEffect: []int{3, 0, 0, 0, 0, 0, 0, 0x80}, Holes: []int{0, 0, 0, 0, 0, 0, 1, 0}}}}
 	files, err := BuildRegion(dataDir, edit)
 	if err != nil {
 		t.Fatal(err)
@@ -530,10 +590,7 @@ func TestRegionHeadersWritten(t *testing.T) {
 // TestRegionHolesRoundTrip sends a real region's holes back as the editor does (every chunk's cell
 // rows in its header): every chunk must keep the hole bits the client has. It needs WOW_DIR set.
 func TestRegionHolesRoundTrip(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -560,6 +617,13 @@ func TestRegionHolesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The same save without headers: headers with holes alone, as a map without chunk data of its own
+	// sends them (#644), must leave every chunk's zone, flags and no-tuft cells as that one has them.
+	edit.Headers = nil
+	plain, err := BuildRegion(dataDir, edit)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for k, f := range files[:view.Size*view.Size] {
 		after, err := adt.ParseTerrain(f.Data)
 		if err != nil {
@@ -573,9 +637,17 @@ func TestRegionHolesRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		without, err := adt.ParseTerrain(plain[k].Data)
+		if err != nil {
+			t.Fatal(err)
+		}
 		for i := range after.Chunks {
-			if after.Chunks[i].Holes != before.Chunks[i].Holes {
-				t.Fatalf("tile %d chunk %d holes %v, client %v", k, i, after.Chunks[i].Holes, before.Chunks[i].Holes)
+			a, b, w := after.Chunks[i], before.Chunks[i], without.Chunks[i]
+			if a.Holes != b.Holes {
+				t.Fatalf("tile %d chunk %d holes %v, client %v", k, i, a.Holes, b.Holes)
+			}
+			if a.AreaID != w.AreaID || a.Flags != w.Flags || a.NoEffect != w.NoEffect {
+				t.Fatalf("tile %d chunk %d: area %d flags %#x no-tufts %v, without headers %d %#x %v", k, i, a.AreaID, a.Flags, a.NoEffect, w.AreaID, w.Flags, w.NoEffect)
 			}
 		}
 	}
@@ -586,10 +658,7 @@ func TestRegionHolesRoundTrip(t *testing.T) {
 // no chunk may count as changed, so a save keeps the client's own liquid bytes. It needs WOW_DIR set
 // to the client.
 func TestRegionLiquidsUnchanged(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -649,11 +718,12 @@ func TestFileTileName(t *testing.T) {
 			t.Errorf("fileTileName(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if id, ok := ClientMapID("kalimdor"); !ok || id != 1 {
-		t.Errorf("ClientMapID(kalimdor) = %d, %v", id, ok)
+	entries := []MapEntry{{ID: 0, Dir: "Azeroth"}, {ID: 30, Dir: "PVPZone01"}}
+	if id, ok := mapIDByDir(entries, "pvpzone01"); !ok || id != 30 {
+		t.Errorf("mapIDByDir(pvpzone01) = %d, %v", id, ok)
 	}
-	if _, ok := ClientMapID("MyMap"); ok {
-		t.Error("ClientMapID(MyMap) found a map")
+	if _, ok := mapIDByDir(entries, "MyMap"); ok {
+		t.Error("mapIDByDir(MyMap) found a map")
 	}
 }
 
@@ -704,5 +774,36 @@ func TestHeightGridJSON(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(`{"Tiles":[{"Outer":[1,2]}]}`), &spec); err == nil {
 		t.Fatal("an array of numbers read as Outer")
+	}
+}
+
+// TestHeaderSpecImpassableOptional checks that a header without "impassable" (a map without chunk
+// data of its own, which sends only holes and shadows, #644) keeps the chunk's flag, while false
+// clears it.
+func TestHeaderSpecImpassableOptional(t *testing.T) {
+	var specs []HeaderSpec
+	if err := json.Unmarshal([]byte(`[{"chunk":1,"areaId":0,"holes":[1,0,0,0,0,0,0,0]},{"chunk":2,"areaId":0,"holes":[1,0,0,0,0,0,0,0],"holesAdd":true},{"chunk":2,"areaId":5,"impassable":false},{"chunk":3,"areaId":5,"impassable":true}]`), &specs); err != nil {
+		t.Fatal(err)
+	}
+	if h := specs[0].chunkHeader(); h.Impassable != nil || h.AreaID != 0 || h.Holes == nil || h.HolesAdd {
+		t.Fatalf("holes-only header: %+v", h)
+	}
+	// A map that doesn't know the client's holes adds its own to them (#663).
+	if h := specs[1].chunkHeader(); h.Holes == nil || !h.HolesAdd {
+		t.Fatalf("added holes: %+v", h)
+	}
+	specs = specs[1:]
+	if h := specs[1].chunkHeader(); h.Impassable == nil || *h.Impassable {
+		t.Fatalf("impassable false read as %v", h.Impassable)
+	}
+	if h := specs[2].chunkHeader(); h.Impassable == nil || !*h.Impassable {
+		t.Fatalf("impassable true read as %v", h.Impassable)
+	}
+	b, err := json.Marshal(HeaderSpec{Chunk: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte("impassable")) || bytes.Contains(b, []byte("holesAdd")) {
+		t.Fatalf("an unset impassable or holesAdd written: %s", b)
 	}
 }

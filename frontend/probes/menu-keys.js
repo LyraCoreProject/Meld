@@ -1,4 +1,6 @@
 // The menu bar and the right-click menu work from the keyboard (#370): focus on the first item when a menu opens, arrows between items and menus, Escape back to the title, and no map hotkey fires meanwhile.
+// touches: frontend/src/components/MenuBar.svelte, frontend/src/components/ContextMenu.svelte, frontend/src/lib/ui/menuKeys.ts
+// tier: smoke
 const { ui, editor } = await P.state()
 const press = (key, init = {}) => {
 	const target = document.activeElement ?? document.body
@@ -114,7 +116,14 @@ await P.frames(2)
 r.ctxEscapeCloses = ui.contextMenu === null
 r.ctxFocusBack = active() === opener
 // A pick with Enter (a click on the focused button) runs the item.
-ui.contextMenu = { x: 200, y: 200, items: [{ label: 'One', run: () => (ran = 'one') }, { label: 'Two', run: () => (ran = 'two') }] }
+ui.contextMenu = {
+	x: 200,
+	y: 200,
+	items: [
+		{ label: 'One', run: () => (ran = 'one') },
+		{ label: 'Two', run: () => (ran = 'two') },
+	],
+}
 await P.until(() => activeLabel() === 'One', 5000, 'focus on the second context menu')
 press('End')
 active().click()

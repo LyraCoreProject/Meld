@@ -6,21 +6,23 @@
 	import { prefabClip } from '../lib/wow/prefabs'
 	import { registerPrefab } from '../lib/wow/thumbs'
 	import { displayName } from '../lib/models/assets'
-	import { hasBackend } from '../lib/io/mapio'
-
+	import { hasBackend } from '../lib/io/backend'
 	// The asset browser's Prefabs tab (#170): the prefabs of the author's prefab folder, drawn as all
 	// their models together. A click places one under the cursor as a model paste (R or Ctrl+scroll
 	// turns it, a click puts it down), varied when Vary is on; placed, it is ordinary models.
 
 	interface Props {
 		tile: number
+		/** The browser header's search (#651). */
+		query: string
+		/** How many prefabs the search leaves, for the header's count. */
+		count?: number
 	}
-	let { tile }: Props = $props()
+	let { tile, query, count = $bindable(0) }: Props = $props()
 
 	let entries = $state<PrefabEntry[]>([])
 	let problems = $state<string[]>([])
 	let loading = $state(false)
-	let query = $state('')
 	let hovered = $state<PrefabEntry | null>(null)
 
 	async function load() {
@@ -44,6 +46,9 @@
 	})
 
 	const shown = $derived(query.trim() ? entries.filter((e) => e.prefab.name.toLowerCase().includes(query.trim().toLowerCase())) : entries)
+	$effect(() => {
+		count = shown.length
+	})
 
 	function place(e: PrefabEntry) {
 		const engine = engineRef.current
@@ -68,14 +73,11 @@
 	<!-- A tile only sets the hover; leaving the grid clears it (no gap between two tiles). -->
 	<div class="grid-wrap" role="group" aria-label="Prefabs" tabindex="-1" onpointerleave={() => (hovered = null)}>
 		<div class="bar">
-			<input class="search" placeholder="Search prefabs…" bind:value={query} aria-label="Search prefabs" />
 			<span class="dim folder" title={prefs.prefabDir}>{prefs.prefabDir || 'No prefab folder yet'}</span>
 			<button onclick={() => void choosePrefabFolder()} disabled={!hasBackend()} title="The folder your prefabs are kept in">Folder…</button>
 			<button onclick={() => void load()} disabled={!prefs.prefabDir} title="Read the folder again">Refresh</button>
-			<button
-				onclick={() => engineRef.current && void saveSelectionAsPrefab(engineRef.current)}
-				disabled={!hasBackend() || !editor.selectedIds.length}
-				title="Save the selected models as a prefab (Models › Save Selection as Prefab)">Save selection…</button
+			<button onclick={() => engineRef.current && void saveSelectionAsPrefab(engineRef.current)} disabled={!hasBackend() || !editor.selectedIds.length} title="Save the selected models as a prefab (Models › Save Selection as Prefab)"
+				>Save selection…</button
 			>
 		</div>
 		{#if !prefs.prefabDir}
@@ -87,7 +89,16 @@
 		{:else}
 			<div class="grid" style:grid-template-columns="repeat(auto-fill, {tile}px)">
 				{#each shown as e (e.file)}
-					<PaletteTile thumbKey={e.thumbKey} label={e.prefab.name} title={`${e.file}: ${e.prefab.objects.length} models`} size={tile} badge={String(e.prefab.objects.length)} onclick={() => place(e)} onhover={(on) => on && (hovered = e)} />
+					<PaletteTile
+						thumbKey={e.thumbKey}
+						label={e.prefab.name}
+						title={`${e.file}: ${e.prefab.objects.length} models`}
+						size={tile}
+						badge={String(e.prefab.objects.length)}
+						showLabel={prefs.browserNames}
+						onclick={() => place(e)}
+						onhover={(on) => on && (hovered = e)}
+					/>
 				{/each}
 			</div>
 		{/if}
@@ -99,13 +110,17 @@
 			{#if prefs.prefabVary.on}
 				<label>Turn ± <input type="number" min="0" max="180" step="5" value={prefs.prefabVary.turn} onchange={(ev) => (prefs.prefabVary.turn = clamp(num(ev), 0, 180))} />°</label>
 				<label>Scale ± <input type="number" min="0" max="50" step="5" value={Math.round(prefs.prefabVary.scale * 100)} onchange={(ev) => (prefs.prefabVary.scale = clamp(num(ev), 0, 50) / 100)} />%</label>
-				<label title="The chance each model (with what hangs on it) is left out; one always stays">Leave out <input type="number" min="0" max="90" step="5" value={Math.round(prefs.prefabVary.drop * 100)} onchange={(ev) => (prefs.prefabVary.drop = clamp(num(ev), 0, 90) / 100)} />%</label>
+				<label title="The chance each model (with what hangs on it) is left out; one always stays"
+					>Leave out <input type="number" min="0" max="90" step="5" value={Math.round(prefs.prefabVary.drop * 100)} onchange={(ev) => (prefs.prefabVary.drop = clamp(num(ev), 0, 90) / 100)} />%</label
+				>
 			{/if}
 		</div>
-		{#if hovered}
+		{#if hovered && prefs.browserNames}
 			<div class="name">{hovered.prefab.name}</div>
 			<ul>
-				{#each contents(hovered) as [name, n] (name)}<li><span>{name}</span>{#if n > 1}<span class="dim"> ×{n}</span>{/if}</li>{/each}
+				{#each contents(hovered) as [name, n] (name)}<li>
+						<span>{name}</span>{#if n > 1}<span class="dim"> ×{n}</span>{/if}
+					</li>{/each}
 			</ul>
 		{/if}
 	</aside>
@@ -132,9 +147,6 @@
 		gap: 6px;
 		padding: 0 0 6px;
 		background: var(--panel);
-	}
-	.search {
-		width: 180px;
 	}
 	.folder {
 		flex: 1;

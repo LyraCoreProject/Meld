@@ -1,4 +1,5 @@
 // View › Walkable ground's tile builds run in Web Workers (#508): in the benchmark scene (Northshire Abbey, 177 tiles) the workers build every tile, the longest frame's NavPreview.update falls well under the main-thread build's (only the gathering is left on the main thread), and the drawn surface and a path over it come out the same as the main thread's build.
+// touches: frontend/src/lib/world/nav/*
 const e = P.e
 const { prefs } = await P.state()
 const { navWorkers, useNavWorkers } = await P.app('/src/lib/world/nav/navJobs.ts')
@@ -30,10 +31,14 @@ nav.update = function (...args) {
 const built = async (what) => {
 	longest = total = most = 0
 	const t0 = performance.now()
-	const c = await P.until(() => {
-		const k = nav.counts
-		return k.total > 0 && k.done === k.total && k.loading === 0 && !k.settling && k
-	}, 400_000, what)
+	const c = await P.until(
+		() => {
+			const k = nav.counts
+			return k.total > 0 && k.done === k.total && k.loading === 0 && !k.settling && k
+		},
+		400_000,
+		what,
+	)
 	return { tiles: c.total, builds: c.builds, longestUpdateMs: +longest.toFixed(1), updateMs: Math.round(total), wallMs: Math.round(performance.now() - t0), mostJobsOut: most }
 }
 // The surface's vertices, summed with their positions, and a path round the abbey.

@@ -1,8 +1,9 @@
 // Stormwind, drawn once in the benchmark scene, is culled by WMO group (#198) in the scene pass and the near shadow cascade (#215): far fewer triangles than drawn whole, and the same picture.
 // At the benchmark view the city is outside the near cascade's box, which since #325 leaves it out of that pass whole, so the near cascade's group cull is measured over the city.
+// touches: frontend/src/lib/world/wmoGroupCull.ts, frontend/src/lib/world/ObjectLayer.ts, frontend/src/lib/engine/shadowCascades.ts
 await P.scene(P.BENCH)
 await P.settle()
-const batch = await P.until(() => [...P.e.objects.batches.entries()].find(([k, b]) => k.includes('stormwind.wmo') && b.cull), 300_000, 'the Stormwind batch')
+const batch = await P.until(() => [...P.e.objects.batches.entries()].find(([k, b]) => k.includes('stormwind.wmo') && b.cull), 120_000, 'the Stormwind batch')
 // The class the batch was made with: an import gives another module instance after an edit (Vite's `?t=` URLs).
 const WmoGroupCull = batch[1].cull.constructor
 // The triangles the near cascade drew in its last redraw on its own: three draws the shadow maps inside
@@ -28,10 +29,14 @@ const storm = async () => {
 	const r = await P.perf(1)
 	// The near map is kept while nothing changes, so it is asked for again until a frame redraws it alone.
 	shadow = -1
-	await P.until(() => {
-		key.shadow.needsUpdate = true
-		return shadow >= 0
-	}, 30_000, 'a redraw of the near shadow map alone')
+	await P.until(
+		() => {
+			key.shadow.needsUpdate = true
+			return shadow >= 0
+		},
+		30_000,
+		'a redraw of the near shadow map alone',
+	)
 	return { frame: r.triangles, shadow, stormwind: meshTriangles(batch[1].mesh) }
 }
 let on, off, cityOn, cityOff, look

@@ -1,5 +1,6 @@
 // Only the animated spawn types the cull drew are posed each frame, and with Prop animations off a drawn type holds its first frame, not the bind pose (#328).
-await P.benchMap('creatures', 300)
+// touches: frontend/src/lib/world/Animator.ts, frontend/src/lib/world/SpawnLayer.ts, frontend/src/lib/world/ObjectLayer.ts
+await P.loadBenchMap('creatures', 300)
 const { animatedAssets } = await P.app('/src/lib/models/assets.ts')
 const layer = P.e.doc.spawnLayer
 const types = [...animatedAssets.keys()].filter((t) => layer.hasType(t))
@@ -42,5 +43,14 @@ await P.frames(3)
 const still = drawn().map((t) => animatedAssets.get(t).anim.posedAt)
 prefs.animations = true
 await P.frames(1)
-const ok = front.drawn > 0 && front.drawnPosed === front.drawn && front.hiddenPosed === 0 && hidden.drawn === 0 && hidden.hiddenPosed === 0 && shownAgain.length > 0 && cameBackPosed === shownAgain.length && still.length > 0 && still.every((x) => x === 0)
+const ok =
+	front.drawn > 0 &&
+	front.drawnPosed === front.drawn &&
+	front.hiddenPosed === 0 &&
+	hidden.drawn === 0 &&
+	hidden.hiddenPosed === 0 &&
+	shownAgain.length > 0 &&
+	cameBackPosed === shownAgain.length &&
+	still.length > 0 &&
+	still.every((x) => x === 0)
 return { ok, types: types.length, front, hidden, shownAgain: shownAgain.length, cameBackPosed, stillPosedAt0: still.every((x) => x === 0), stillTypes: still.length }

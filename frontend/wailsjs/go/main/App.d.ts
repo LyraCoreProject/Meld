@@ -3,6 +3,7 @@
 import {vmangos} from '../models';
 import {main} from '../models';
 import {recovery} from '../models';
+import {scripts} from '../models';
 import {mapfile} from '../models';
 import {wow} from '../models';
 import {config} from '../models';
@@ -40,6 +41,8 @@ export function ClassLevelStats(arg1:number,arg2:number,arg3:number):Promise<Arr
 
 export function ClearThumbnailCache():Promise<void>;
 
+export function ClientFilesWaiting():Promise<number>;
+
 export function CloseProject():Promise<void>;
 
 export function CreateCreature(arg1:number,arg2:string):Promise<number>;
@@ -58,6 +61,8 @@ export function DeleteConditionText(arg1:number,arg2:number):Promise<vmangos.Gre
 
 export function DeleteQuest(arg1:number):Promise<string>;
 
+export function DeleteScript(arg1:string):Promise<void>;
+
 export function DropRecovery(arg1:string):Promise<void>;
 
 export function DropRecoveryParts(arg1:number):Promise<void>;
@@ -67,6 +72,8 @@ export function EndClientSandbox():Promise<main.SandboxEnded>;
 export function EndRecovery():Promise<void>;
 
 export function EquipBonuses():Promise<Array<vmangos.EquipBonusKind>>;
+
+export function EquipmentDisplays(arg1:Array<number>):Promise<Record<number, any>>;
 
 export function EquipmentFor(arg1:any):Promise<number>;
 
@@ -110,6 +117,8 @@ export function ItemModelLook(arg1:number,arg2:number,arg3:number,arg4:number):P
 
 export function ItemSets(arg1:Array<number>):Promise<Array<vmangos.ItemSet>>;
 
+export function ItemTables():Promise<vmangos.ItemTables>;
+
 export function LaunchGame():Promise<void>;
 
 export function LaunchGameAt(arg1:vmangos.CharacterSpot):Promise<string>;
@@ -136,11 +145,15 @@ export function ListPrefabs(arg1:string):Promise<Array<main.PrefabFile>>;
 
 export function ListRecovery():Promise<Array<recovery.Info>>;
 
+export function ListScripts():Promise<Array<scripts.File>>;
+
 export function ListSpells(arg1:string,arg2:number,arg3:string,arg4:number):Promise<vmangos.SpellList>;
 
 export function ListVisualEffects():Promise<Array<vmangos.VisualEffect>>;
 
 export function ListWeapons():Promise<Array<vmangos.WeaponEntry>>;
+
+export function LoadBaseRegionPaint(arg1:string,arg2:number,arg3:number,arg4:number):Promise<vmangos.RegionView>;
 
 export function LoadBuildingMap(arg1:string):Promise<vmangos.RegionView>;
 
@@ -151,6 +164,8 @@ export function LoadPrefs():Promise<string>;
 export function LoadRecovery(arg1:string):Promise<mapfile.MapData>;
 
 export function LoadRegion(arg1:string,arg2:number,arg3:number,arg4:number):Promise<vmangos.RegionView>;
+
+export function LoadScriptImage(arg1:string):Promise<main.ScriptImage>;
 
 export function LoadSpawns(arg1:string,arg2:number,arg3:number,arg4:number):Promise<Array<vmangos.WorldSpawn>>;
 
@@ -184,7 +199,11 @@ export function NextObjectLoot():Promise<number>;
 
 export function NextPoolEntry():Promise<number>;
 
+export function ObjectDisplaySounds(arg1:number):Promise<vmangos.ObjectDisplaySounds>;
+
 export function ObjectModel(arg1:number):Promise<string>;
+
+export function ObjectTables():Promise<vmangos.ObjectTables>;
 
 export function OpenBrushDialog():Promise<Array<string>>;
 
@@ -272,6 +291,8 @@ export function RegionHorizon(arg1:string,arg2:number,arg3:number,arg4:number):P
 
 export function RegionInner(arg1:string,arg2:number,arg3:number,arg4:number):Promise<vmangos.RegionInner>;
 
+export function RegionMapID(arg1:string):Promise<number>;
+
 export function RegionPending(arg1:vmangos.RegionEdit):Promise<vmangos.RegionResult>;
 
 export function RegionShadows(arg1:string,arg2:number,arg3:number,arg4:number):Promise<vmangos.RegionShadows>;
@@ -300,7 +321,7 @@ export function SaveHeightmapDialog(arg1:string):Promise<string>;
 
 export function SaveImageDialog(arg1:string,arg2:string):Promise<string>;
 
-export function SaveItem(arg1:number,arg2:number,arg3:Record<string, string>):Promise<string>;
+export function SaveItem(arg1:number,arg2:number,arg3:Record<string, string>):Promise<main.TemplateSaved>;
 
 export function SaveLights(arg1:vmangos.LightsEdit):Promise<string>;
 
@@ -312,6 +333,8 @@ export function SaveModelSetDialog(arg1:string):Promise<string>;
 
 export function SaveObject(arg1:number,arg2:number,arg3:Record<string, string>):Promise<string>;
 
+export function SaveObjectDisplaySounds(arg1:number,arg2:Array<number>):Promise<main.SoundsSaved>;
+
 export function SaveObjectLoot(arg1:number,arg2:Array<vmangos.LootItem>):Promise<string>;
 
 export function SaveObjectQuests(arg1:number,arg2:vmangos.QuestLists):Promise<string>;
@@ -320,7 +343,7 @@ export function SavePrefabDialog(arg1:string,arg2:string):Promise<string>;
 
 export function SavePrefs(arg1:string):Promise<void>;
 
-export function SaveQuest(arg1:number,arg2:number,arg3:Record<string, string>):Promise<string>;
+export function SaveQuest(arg1:number,arg2:number,arg3:Record<string, string>):Promise<main.TemplateSaved>;
 
 export function SaveQuestGivers(arg1:number,arg2:vmangos.QuestGivers,arg3:Array<number>):Promise<string>;
 
@@ -334,6 +357,8 @@ export function SaveSQLDialog(arg1:string):Promise<string>;
 
 export function SaveSceneMap(arg1:mapfile.MapData):Promise<string>;
 
+export function SaveScript(arg1:string,arg2:string):Promise<string>;
+
 export function SaveSpell(arg1:number,arg2:number,arg3:Record<string, string>,arg4:string,arg5:vmangos.VisualDesign):Promise<main.SpellSaved>;
 
 export function SaveTaxi(arg1:vmangos.TaxiEdit):Promise<main.AreaSaveResult>;
@@ -344,13 +369,21 @@ export function SaveThumbnail(arg1:string,arg2:string):Promise<void>;
 
 export function SaveVendor(arg1:number,arg2:Array<vmangos.VendorItem>):Promise<string>;
 
+export function ScriptCommands(arg1:string,arg2:number):Promise<Array<vmangos.ScriptCommand>>;
+
+export function ScriptsFolder():Promise<string>;
+
 export function SearchCreatures(arg1:string):Promise<Array<vmangos.CreatureTemplate>>;
 
 export function SearchItems(arg1:string):Promise<Array<vmangos.ItemRef>>;
 
+export function SearchItemsSorted(arg1:string,arg2:string,arg3:boolean):Promise<Array<vmangos.ItemRef>>;
+
 export function SearchQuests(arg1:string):Promise<Array<vmangos.QuestRef>>;
 
 export function SearchSpells(arg1:string):Promise<Array<vmangos.SpellRef>>;
+
+export function SearchWorldRefs(arg1:string,arg2:string):Promise<Array<vmangos.NamedID>>;
 
 export function SessionLog():Promise<string>;
 
@@ -370,11 +403,15 @@ export function SetVmangosPath(arg1:string):Promise<void>;
 
 export function SetWowPath(arg1:string):Promise<wow.Status>;
 
+export function SoundEntries():Promise<Array<vmangos.SoundOption>>;
+
 export function SpawnEditSQL(arg1:string,arg2:number,arg3:number,arg4:number,arg5:Array<vmangos.SpawnEdit>):Promise<vmangos.Result>;
 
 export function SpawnEmotes():Promise<Array<vmangos.Emote>>;
 
 export function SpawnLook(arg1:number,arg2:number,arg3:number,arg4:number,arg5:number):Promise<vmangos.LookResult>;
+
+export function SpawnScripts(arg1:string,arg2:number,arg3:number):Promise<Array<vmangos.SpawnScript>>;
 
 export function SpawnTeleports(arg1:string,arg2:number,arg3:number):Promise<Array<vmangos.SpawnTeleport>>;
 
@@ -387,6 +424,8 @@ export function SpellStarters():Promise<Array<vmangos.SpellStarter>>;
 export function SpellTables():Promise<vmangos.SpellTables>;
 
 export function SpellTexts(arg1:Array<number>):Promise<Record<number, string>>;
+
+export function SpellsWithIcon(arg1:string):Promise<vmangos.IconSpells>;
 
 export function SpellsWithVisual(arg1:number):Promise<Array<vmangos.SpellRef>>;
 
@@ -401,6 +440,10 @@ export function UpdateRegionServer(arg1:number,arg2:Array<string>):Promise<void>
 export function VmangosPath():Promise<string>;
 
 export function WMODoodadSets(arg1:string):Promise<Array<string>>;
+
+export function WorldHorizon(arg1:string):Promise<Array<vmangos.HorizonTile>>;
+
+export function WorldRefNames(arg1:string,arg2:Array<number>):Promise<Record<number, string>>;
 
 export function WowStatus():Promise<wow.Status>;
 
@@ -418,6 +461,10 @@ export function WriteTextFile(arg1:string,arg2:string):Promise<void>;
 
 export function WriteWorldMap(arg1:vmangos.WorldMapSpec):Promise<main.WorldMapResult>;
 
+export function ZoneDoodads(arg1:string,arg2:vmangos.Zone):Promise<vmangos.ZoneDoodadList>;
+
 export function ZoneSounds():Promise<vmangos.ZoneSoundTables>;
+
+export function ZoneTextures(arg1:string,arg2:vmangos.Zone):Promise<Array<vmangos.TextureUse>>;
 
 export function ZoneWeather():Promise<main.ZoneWeatherList>;

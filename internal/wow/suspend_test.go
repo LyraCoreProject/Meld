@@ -8,14 +8,12 @@ import (
 	"time"
 
 	"Meld/internal/mpq"
+	"Meld/internal/testclient"
 )
 
 // TestSuspendResume releases the archives and loads them again: WOW_DIR=/path/to/client go test ./internal/wow/
 func TestSuspendResume(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("set WOW_DIR to a WoW 1.x client to run")
-	}
+	dir := testclient.DataDir(t)
 	c := NewClient()
 	if err := c.Open(dir); err != nil {
 		t.Fatal(err)
@@ -139,5 +137,91 @@ func TestResumeKeepsCache(t *testing.T) {
 	texture(b)
 	if reads != 4 {
 		t.Fatalf("%d reads, want 4: Open keeps the cache", reads)
+	}
+}
+
+// TestReadWaitsForResume checks that a read while the archives are suspended waits for the Resume
+// instead of failing (#472), and that an unload or the time limit still ends the wait.
+func TestReadWaitsForResume(t *testing.T) {
+	root := t.TempDir()
+	data := filepath.Join(root, "Data")
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const a = `tileset\Meld\A.blp`
+	want := solidBLP(t, 255, 0, 0)
+	if err := os.WriteFile(filepath.Join(data, "patch-3.MPQ"), mpq.Write([]mpq.File{{Name: a, Data: want}}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := NewClient()
+	if err := c.Open(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Open("") })
+
+	type result struct {
+		b   []byte
+		err error
+	}
+	start := func() chan result {
+		done := make(chan result, 1)
+		go func() {
+			b, err := c.read(a)
+			done <- result{b, err}
+		}()
+		return done
+	}
+
+	c.Suspend()
+	done := start()
+	select {
+	case r := <-done:
+		t.Fatalf("read ended while suspended: %v", r.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := c.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-done:
+		if r.err != nil || !bytes.Equal(r.b, want) {
+			t.Fatalf("read after Resume: %v", r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("read still waiting after Resume")
+	}
+
+	// Unloading the client (the sandbox's end, a cleared folder) ends the wait with an error.
+	c.Suspend()
+	done = start()
+	time.Sleep(50 * time.Millisecond)
+	if err := c.Open(""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-done:
+		if r.err == nil {
+			t.Fatal("read succeeded with no client")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("read still waiting after the client was unloaded")
+	}
+
+	// A Suspend that outlasts suspendWait fails the read rather than hanging it.
+	if err := c.Open(root); err != nil {
+		t.Fatal(err)
+	}
+	old := suspendWait
+	suspendWait = 50 * time.Millisecond
+	t.Cleanup(func() { suspendWait = old })
+	c.Suspend()
+	if _, err := c.read(a); err == nil {
+		t.Fatal("read succeeded while suspended past the limit")
+	}
+	if err := c.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := c.read(a); err != nil || !bytes.Equal(b, want) {
+		t.Fatalf("read after the late Resume: %v", err)
 	}
 }

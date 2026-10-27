@@ -11,6 +11,11 @@ Shaders, the sky and time of day, the shadow cascades and the client's lighting.
   - The sky dome is three's Preetham `Sky` shader, patched with our ACES tone mapping, stars,
     Milky Way and moon.
   - `update(hour)` computes the sun/moon directions and all lighting colours (`state`).
+  - A map with no sky (#339, `Engine.noSky`: a client dungeon or raid in Map.dbc with no WDL far
+    terrain around the open region, such as Uldaman) hides the dome and the clouds and shows `EARTH`,
+    the floor plane's dark earth with the sea off, as the background (and the editor's fog colour) at
+    every pitch and hour. Its halls lie below the floor plane, so a camera there saw the dome's white
+    horizon band. A dungeon with land around it (Zul'Farrak, the Deadmines) keeps its sky.
 - `Engine.updateEnvironment` pushes `state` into the terrain and water uniforms, fog and
   background every frame. Change lighting there, not in individual shaders.
 - **Shadow cascades** (`engine/shadowCascades.ts`): the key light's shadow has two maps. The
@@ -21,7 +26,9 @@ Shaders, the sky and time of day, the shadow cascades and the client's lighting.
   `keyShadow()`, and `patchCascadeShadows` makes every Lambert prop material do the same through
   `onBeforeCompile`. The key light must stay directional light 0.
 - `Engine.fitShadows` fits both cascades each frame (`Environment.fitCascade` snaps each to its
-  texels and sets its depth range and biases in world units from the texel size). Both maps are
+  texels and sets its depth range and biases in world units from the texel size), from how far ahead
+  the camera meets the ground (300 yards when it doesn't): in a world view the streamed tiles
+  (`marchGround` over `WorldStream.heightAt`), not the hidden stand-in terrain (#741). Both maps are
   kept between frames (`autoUpdate` off); `Engine.markShadows`, just before the render, redraws the
   far one when its fit, the scene (objects, heights, holes, spawns, a model texture bound:
   `shadowSceneChanged`) or a preference changed, and the near one on those and when the camera moved
@@ -55,6 +62,10 @@ Shaders, the sky and time of day, the shadow cascades and the client's lighting.
   the cull's frustums, so it puts `shadow.matrix` back afterwards (#366); anything else that updates
   a shadow's matrices outside its draw must do the same, or the shadows slide under the day cycle. Keep the near box inside the far one (the 90% bound) if either
   cascade's sizes change: `cascadeShadow` blends into the far map at the near map's edge.
+- In a world view a scene change (a model placed, a texture bound) redraws the far map at most once
+  every `WORLD_FAR_FRAMES` (30) frames (`Engine.markShadows`, #15): streaming tiles change the scene on
+  most frames, and each far redraw there is about 2,000 calls and 5 ms of shadow pass. A held change
+  is drawn once the frames are up; a far fit moving, a preference or a tab switch still redraws at once.
 - Lighting is plain Lambert on terrain and props alike (no wrap, no shadow floor), so a shadowed
   surface keeps only the hemisphere light. The day sky light is a few times weaker than the sun
   for the shadows to read.

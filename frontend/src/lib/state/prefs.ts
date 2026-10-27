@@ -1,7 +1,7 @@
 import { LoadPrefs, SavePrefs } from '../../../wailsjs/go/main/App'
-import { hasBackend } from '../io/mapio'
+import { hasBackend } from '../io/backend'
 import { prefs, type Prefs } from './editor.svelte'
-import { changedPrefs } from './prefsPatch'
+import { changedPrefs, prefShapeOk, prefValueOk } from './prefsPatch'
 
 // Preferences live in the Go-side config file (reliable across platforms,
 // unlike webview storage). Unknown/invalid keys are ignored on load.
@@ -21,7 +21,7 @@ const readOnly = typeof location !== 'undefined' && /[?&]nosave(?:[&=]|$)/.test(
 const useDefaults = typeof location !== 'undefined' && /[?&]defaults(?:[&=]|$)/.test(location.search)
 
 function canSave() {
-  return hasBackend() && !readOnly
+	return hasBackend() && !readOnly
 }
 
 /**
@@ -33,41 +33,46 @@ function canSave() {
 const baseline = new Map<string, string>()
 
 export async function loadPrefs() {
-  if (!hasBackend() || useDefaults) return
-  try {
-    const raw = await LoadPrefs()
-    if (!raw) return
-    const saved = JSON.parse(raw) as Partial<Prefs>
-    for (const k of Object.keys(prefs) as (keyof Prefs)[]) {
-      const ok = Array.isArray(prefs[k]) ? Array.isArray(saved[k]) : typeof saved[k] === typeof prefs[k]
-      if (ok) {
-        ;(prefs as Record<string, unknown>)[k] = saved[k]
-        baseline.set(k, JSON.stringify(saved[k]))
-      }
-    }
-  } catch (e) {
-    console.warn('failed to load preferences', e)
-  }
+	if (!hasBackend() || useDefaults) return
+	try {
+		const raw = await LoadPrefs()
+		if (!raw) return
+		const saved = JSON.parse(raw) as Partial<Prefs>
+		for (const k of Object.keys(prefs) as (keyof Prefs)[]) {
+			if (!(k in saved)) continue
+			if (prefValueOk(prefs[k], saved[k]) && prefShapeOk(k, saved[k])) {
+				;(prefs as Record<string, unknown>)[k] = saved[k]
+				baseline.set(k, JSON.stringify(saved[k]))
+			} else {
+				// Rejected: keep the default, but count it as already saved, so the next save doesn't
+				// overwrite what the file holds until the user changes the preference themselves.
+				console.warn('ignored preference with the wrong shape:', k)
+				baseline.set(k, JSON.stringify(prefs[k]))
+			}
+		}
+	} catch (e) {
+		console.warn('failed to load preferences', e)
+	}
 }
 
 /** Sends the changed preferences and, once they are written, takes them as the new baseline. */
 async function send() {
-  const patch = changedPrefs(prefs as unknown as Record<string, unknown>, baseline)
-  if (!patch) return
-  try {
-    await SavePrefs(patch.json)
-    for (const [k, v] of patch.keys) baseline.set(k, v)
-  } catch (e) {
-    console.warn('failed to save preferences', e)
-  }
+	const patch = changedPrefs(prefs as unknown as Record<string, unknown>, baseline)
+	if (!patch) return
+	try {
+		await SavePrefs(patch.json)
+		for (const [k, v] of patch.keys) baseline.set(k, v)
+	} catch (e) {
+		console.warn('failed to save preferences', e)
+	}
 }
 
 let timer: ReturnType<typeof setTimeout> | undefined
 /** Writes the preferences now, for the moment before the app quits. */
 export async function flushPrefs() {
-  if (!canSave()) return
-  clearTimeout(timer)
-  await send()
+	if (!canSave()) return
+	clearTimeout(timer)
+	await send()
 }
 
 /** Saves one preference alone, without the walk over every key that `send` does (the session, every 3 s). */
@@ -85,7 +90,7 @@ export async function savePref(key: keyof Prefs) {
 
 /** Debounced save of the preferences that changed. */
 export function savePrefs() {
-  if (!canSave()) return
-  clearTimeout(timer)
-  timer = setTimeout(() => void send(), 400)
+	if (!canSave()) return
+	clearTimeout(timer)
+	timer = setTimeout(() => void send(), 400)
 }

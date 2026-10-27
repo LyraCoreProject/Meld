@@ -64,16 +64,7 @@
 <svelte:window onpointerdown={onWindowDown} onkeydown={(e) => ui.contextMenu && e.key === 'Escape' && close()} onblur={close} />
 
 {#if ui.contextMenu}
-	<div
-		class="menu"
-		role="menu"
-		tabindex="-1"
-		aria-label={ui.contextMenu.title ?? 'Context menu'}
-		bind:this={el}
-		{style}
-		oncontextmenu={(e) => e.preventDefault()}
-		onkeydown={onMenuKey}
-	>
+	<div class="menu" role="menu" tabindex="-1" aria-label={ui.contextMenu.title ?? 'Context menu'} bind:this={el} {style} oncontextmenu={(e) => e.preventDefault()} onkeydown={onMenuKey}>
 		{#if ui.contextMenu.title}<div class="title">{ui.contextMenu.title}</div>{/if}
 		{#each ui.contextMenu.items as it, i (i)}
 			{#if it.separator}
@@ -159,7 +150,7 @@
 	.item.danger:hover:not(:disabled),
 	.item.danger:focus-visible {
 		background: var(--danger);
-		color: #fff;
+		color: var(--accent-ink);
 	}
 	.item:disabled {
 		opacity: 0.45;

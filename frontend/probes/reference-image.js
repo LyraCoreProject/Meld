@@ -1,8 +1,9 @@
 // A reference image (#184) on a flat map: drawn over the ground and over the top-down view, dragged in it, turned into zones, heights, textures and the mask, each undone, and kept by the map's save data.
+// touches: frontend/src/lib/terrain/referenceImage.ts, frontend/src/lib/io/referenceLoad.ts, frontend/src/components/ReferenceWindow.svelte
 const e = P.e
 const { editor, ui } = await P.state()
 const { referenceFrom } = await P.app('/src/lib/io/referenceLoad.ts')
-const { toMapData, fromMapData } = await P.app('/src/lib/io/mapio.ts')
+const { toMapData, fromMapData } = await P.app('/src/lib/io/mapData.ts')
 e.newDocument(256, 'flat', 0, 'Probe')
 await P.frames(1)
 const t = e.terrain
@@ -95,7 +96,11 @@ const heightsUndone = t.heights.every((h, i) => h === before[i])
 // Textures: red paints palette entry 1, blue entry 2, alone; undo puts the paint back.
 const wBefore = t.weights.slice()
 const sBefore = t.chunkSlots.slice()
-e.referenceToTextures(colours, colours.map((_, k) => (k === red ? 1 : k === blue ? 2 : -1)), 40)
+e.referenceToTextures(
+	colours,
+	colours.map((_, k) => (k === red ? 1 : k === blue ? 2 : -1)),
+	40,
+)
 const R = t.splatRes
 const texel = Math.floor(R / 2) * R + Math.floor(R / 4)
 const ch = Math.floor(R / 2 / (R / side)) * side + Math.floor(R / 4 / (R / side))
@@ -105,7 +110,11 @@ e.history.undo()
 const paintUndone = t.weights.every((w, i) => w === wBefore[i]) && t.chunkSlots.every((s, i) => s === sBefore[i])
 
 // The mask: red's texels, a quarter of the map; undo empties it.
-e.referenceToMask(colours, colours.map((_, k) => k === red), 40)
+e.referenceToMask(
+	colours,
+	colours.map((_, k) => k === red),
+	40,
+)
 const masked = t.mask.reduce((n, m) => n + (m ? 1 : 0), 0) / t.mask.length
 e.history.undo()
 const maskUndone = t.mask.every((m) => m === 0)
@@ -122,10 +131,54 @@ const restored = editor.reference?.path === placed.path
 ui.topDown = false
 
 const ok =
-	fitted && drawn && overlay && screenOk && backOnGround && moved > 1 && dragUndone &&
-	zoneLeft === 12 && zoneRight === 40 && zoneTop === 0 && zonesUndone &&
-	Math.abs(hMid - 10) < 0.01 && hEdge === before[0] && heightsUndone &&
-	painted && paintUndone &&
-	Math.abs(masked - 0.25) < 0.02 && maskUndone &&
-	saved && removed && restored
-return { ok, fitted, drawn, left, right, offLeft, changed, overlay, screenOk, fromScreen, backOnGround, moved, dragUndone, zoneLeft, zoneRight, zoneTop, zonesUndone, hMid, hEdge, heightsUndone, painted, paintUndone, masked, maskUndone, saved, removed, restored, colours: colours.length }
+	fitted &&
+	drawn &&
+	overlay &&
+	screenOk &&
+	backOnGround &&
+	moved > 1 &&
+	dragUndone &&
+	zoneLeft === 12 &&
+	zoneRight === 40 &&
+	zoneTop === 0 &&
+	zonesUndone &&
+	Math.abs(hMid - 10) < 0.01 &&
+	hEdge === before[0] &&
+	heightsUndone &&
+	painted &&
+	paintUndone &&
+	Math.abs(masked - 0.25) < 0.02 &&
+	maskUndone &&
+	saved &&
+	removed &&
+	restored
+return {
+	ok,
+	fitted,
+	drawn,
+	left,
+	right,
+	offLeft,
+	changed,
+	overlay,
+	screenOk,
+	fromScreen,
+	backOnGround,
+	moved,
+	dragUndone,
+	zoneLeft,
+	zoneRight,
+	zoneTop,
+	zonesUndone,
+	hMid,
+	hEdge,
+	heightsUndone,
+	painted,
+	paintUndone,
+	masked,
+	maskUndone,
+	saved,
+	removed,
+	restored,
+	colours: colours.length,
+}

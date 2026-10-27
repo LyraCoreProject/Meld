@@ -15,6 +15,11 @@ Svelte 5 + TypeScript + Three.js frontend. It must stay **fast** and build on **
     Linux. The other one cannot run here, so say so in the issue's closing comment.
 
   If they fail, fix the problem first, or tell the user rather than committing broken code.
+- To redo a reverted commit, start from `git revert <the revert's hash>` (or cherry-pick the original
+  onto the current tree) and resolve the conflicts. Never rebuild it by copying files from the old
+  commit: that silently undoes every later change to them (#640's redo of #618 undid #461's prefs
+  effect in `App.svelte`). Then check that `git diff <revert>^..HEAD -- <files>` shows only the
+  intended change.
 - Match the style of existing commit messages: one sentence in the imperative mood that says what
   changed and why, e.g. "Save palette thumbnails through a Go binding instead of a POST, since
   WebKitGTK crashes on request bodies".
@@ -26,8 +31,9 @@ Svelte 5 + TypeScript + Three.js frontend. It must stay **fast** and build on **
 
 ## Backlog: GitHub issues
 
-The backlog is the issues of `Coldensjo/Meld`, through `gh` (logged in on this machine); LOOP.md is
-the loop's own use of them. The old BACKLOG.md and PROGRESS.md (the loop's log up to 2026-10-15) are
+The backlog is the issues of `Coldensjo/Meld`, through `gh` (logged in on this machine); the issue loop
+(the `issue-loop` plugin, `/issue-loop:run`, configured in `.claude/issue-loop.md`) works through
+them. The old BACKLOG.md and PROGRESS.md (the loop's log up to 2026-10-15) are
 in the git history (`git show b47706b:PROGRESS.md`).
 
 - **Anything new goes in an issue**: a bug you find, an idea, a follow-up you leave for later. Search
@@ -101,11 +107,15 @@ Meld's config (`%APPDATA%\Meld\config.json`) holds absolute paths (`wowPath`, `v
 make dev             # wails dev -tags webkit2_41 (hot reload; browser debug at http://localhost:34115)
 make build-linux     # wails build -tags webkit2_41  → build/bin/Meld
 make build-windows   # wails build -platform windows/amd64 → build/bin/Meld.exe
-make test            # go test ./internal/... (and . when frontend/dist exists) + frontend unit tests (`bun test`)
-make check           # go vet (same rule) + (cd frontend && bun run check)
+make test            # go test ./internal/... ./cmd/... (and . when frontend/dist exists) + frontend unit tests (`bun test`)
+make check           # gofmt + go vet (same rule) + golangci-lint (skipped if missing) + bindings-check (wailsjs matches the bound methods) + notices-check + (cd frontend && bun run check)
+make verify          # check + test + the build for this OS: the gate before a commit
+make bindings        # regenerate frontend/wailsjs (wails generate module)
+make format          # gofmt -w + Prettier over frontend (frontend/.prettierrc.json); make check fails on unformatted files
 make probe           # every live-app probe (frontend/probes) against the running `make dev`
 cd frontend && bun run probe <name...>   # chosen probes; --list names them (docs/TESTS.md, "Probes")
 cd frontend && bun run build   # frontend only
+make docs            # the docs site (VitePress, docs/.vitepress) → docs/.vitepress/dist; `cd frontend && bun run docs:dev` serves it live
 ```
 
 - Linux **requires** `-tags webkit2_41`. This system only has webkit2gtk-4.1.
@@ -133,11 +143,16 @@ cd frontend && bun run build   # frontend only
 
 ## Architecture
 
-- **Go owns files, archives and the server; the frontend owns rendering and editing.** `app.go` is
-  the thin binding layer (dialogs, `SaveMap`, `LoadMap`, the client and server calls), and the real
-  work sits in packages under `internal/`:
+- **Go owns files, archives and the server; the frontend owns rendering and editing.** `app.go` (with
+  one `app_<area>.go` file a seam beside it) is the thin binding layer (dialogs, `SaveMap`,
+  `LoadMap`, the client and server calls), and the real work sits in packages under `internal/`:
   - `mapfile` reads and writes `.wmap` files; `config` keeps the user's settings; `heightmap` reads
-    and writes heightmap PNGs.
+    and writes heightmap PNGs; `recovery` autosaves maps with unsaved changes for after a crash;
+    `sessionlog` keeps each session's status lines in a file; `handoff` passes a bound method's large
+    binary reply to the page as one GET.
+  - For tests: `sandbox` copies the client's Data folder for the probes, `testclient` finds the
+    client and server the client-dependent Go tests read, and `cmd/meldtool` inspects `.wmap` files,
+    tiles, MPQs and the bound methods (docs/TESTS.md).
   - `mpq` is our own read-only MPQ reader; `wow` opens the client, decodes BLP, M2 and WMO, dresses
     creature looks, builds minimap overviews and serves `/wow/*`.
   - `adt` reads and rewrites 1.12 tiles: terrain, textures and alpha maps, liquids (MCLQ), models,
@@ -149,8 +164,9 @@ cd frontend && bun run build   # frontend only
     packed guids): with a realm set (`lyracore editor`, or Preferences › LyraCore Realm…), spawns are
     read from it and saved live through its operator reducers instead of VMaNGOS's database
     (`vmangos.ReadLyraSpawns`, `vmangos.ApplyLyraSpawnEdits`; docs/architecture/client.md, LyraCore realms).
-  - `game` closes and reopens the client (and the world server, for a write it reads at its start)
-    around a patch write: Wow.exe, or Benilla (the
+  - `game` starts the client and tells whether it and the servers run; no patch write closes or
+    restarts anything (#661: a write waits for a running game, `installClient` in `app_pending.go`).
+    The client is Wow.exe, or Benilla (the
     open-source 1.12.1 client, `config.GameClient`, started from its folder with `WOW_DATA`,
     `WOW_USER`, `WOW_PASS`, `WOW_REALM` and `WOW_CHAR`; see docs/BENILLA.md). Launch (`LaunchGameAt`)
     puts the Game Login's character where the camera is: `Engine.playerSpot` finds the ground or
@@ -179,9 +195,13 @@ cd frontend && bun run build   # frontend only
 
 ## Architecture docs
 
-The architecture lives in `docs/architecture/`, one file an area. **Before changing code in an area,
-read its doc**; when a change alters what a doc says (a new feature, a moved function, a new rule),
-update the doc in the same commit. A new area gets its own file and a line here.
+The architecture lives in `docs/architecture/`, one file an area. It is a reference, not a step
+before every change: **read an area's doc when the issue's notes don't already say which code to
+change and what the traps are**, or when a change reaches past the code the notes name. Update the
+docs **once an issue**, in its last commit or a commit of its own, and only for what a later reader
+needs: a feature's behaviour and where it lives, a rule, a trap, a decision. A renamed or moved
+function needs a doc edit only where a doc names it. A new area gets its own file and a line here.
+The test docs are kept to the same rule (see "Testing notes"): a check worth repeating still goes in.
 
 | Doc | What it covers |
 |---|---|
@@ -192,6 +212,7 @@ update the doc in the same commit. A new area gets its own file and a line here.
 | `docs/architecture/lighting.md` | Shaders, the sky and time of day, shadow cascades, client lighting and clouds |
 | `docs/architecture/ui.md` | The window layout, the asset browser (search, tabs, sets, prefabs, thumbnails), the dock, the Inspector, History and Map Properties |
 | `docs/architecture/client.md` | The `/wow/*` endpoints, coordinates, the asset registry, WMO doodad sets, and spawns: looks, editing, waypoints, names and the creature editor |
+| `docs/architecture/scripting.md` | The Lua engine (wasmoon), Noggit Red's script API, the script host and its undo step, the scripts folder and the Scripts window, script brushes (the Script Brush tool), noise maps and images |
 
 ## Rules that cut across the code
 
@@ -249,8 +270,9 @@ These are repeated from the docs above, since breaking one breaks things far fro
 
 ## Conventions
 
-- TypeScript strict, no `any` in committed code. Prettier-ish style: tabs (`.editorconfig`), single
-  quotes, no semicolons. Older files still indent with 2 spaces; new and edited files use tabs.
+- TypeScript strict, no `any` in committed code. Prettier formats the frontend (`frontend/.prettierrc.json`:
+  tabs, single quotes, no semicolons, 240 columns): run `make format` before committing, since `make check`
+  fails on a file Prettier would change.
 - Svelte 5 runes only (`$state`, `$derived`, `$props`, `onclick=`). No legacy `export let` or
   `on:click`.
 - UI styling: plain CSS with the tokens in `frontend/src/app.css` (dark editor theme). No UI
@@ -291,12 +313,3 @@ These are repeated from the docs above, since breaking one breaks things far fro
 - Linux/Wayland: `env_linux.go` sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Without it, WebKitGTK
   crashes with "Error 71 (Protocol error)" on this KDE Wayland machine.
 - Windows uses WebView2 (Chromium) and has no cgo requirement, so it cross-compiles from Linux.
-- Headless Linux (no screen; the editor used from a browser on `make dev`'s page): run with
-  `MELD_HEADLESS=1`. The Wails window then starts hidden, so WebKit runs no animation frames; shown, it
-  draws the whole editor uncapped and in software (GTK's Broadway backend has no GL), about a CPU core
-  for nothing. On the dev laptop the user unit `meld-dev.service` sets it and caps the service
-  (`CPUQuota=150%`, `MemoryMax=4G`): idle after startup it measured 0% CPU.
-- macOS: Meld builds as a universal `Meld.app` through `.github/workflows/build-macos.yml` (run by hand or
-  on a `v*` tag; the app is the run's `Meld-macos` artifact). It can't be built on Linux: a Wails app for
-  macOS links Apple's frameworks, whose SDK is only licensed for Macs. The app is signed ad hoc, not
-  notarised, so macOS blocks its first open (`xattr -dr com.apple.quarantine Meld.app`).

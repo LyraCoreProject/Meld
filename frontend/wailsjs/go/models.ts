@@ -72,6 +72,8 @@ export namespace main {
 	export class AreaSaveResult {
 	    patch: string;
 	    server: boolean;
+	    waiting: boolean;
+	    restart: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new AreaSaveResult(source);
@@ -81,6 +83,8 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.patch = source["patch"];
 	        this.server = source["server"];
+	        this.waiting = source["waiting"];
+	        this.restart = source["restart"];
 	    }
 	}
 	export class AreaTriggerList {
@@ -381,11 +385,42 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ScriptImage {
+	    width: number;
+	    height: number;
+	    url: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ScriptImage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.width = source["width"];
+	        this.height = source["height"];
+	        this.url = source["url"];
+	    }
+	}
+	export class SoundsSaved {
+	    changed: boolean;
+	    waiting: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SoundsSaved(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.changed = source["changed"];
+	        this.waiting = source["waiting"];
+	    }
+	}
 	export class SpellSaved {
 	    sql: string;
 	    iconAdded: string;
 	    visual: number;
 	    visualAdded: boolean;
+	    refused?: vmangos.ColumnError;
 	
 	    static createFrom(source: any = {}) {
 	        return new SpellSaved(source);
@@ -397,7 +432,58 @@ export namespace main {
 	        this.iconAdded = source["iconAdded"];
 	        this.visual = source["visual"];
 	        this.visualAdded = source["visualAdded"];
+	        this.refused = this.convertValues(source["refused"], vmangos.ColumnError);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class TemplateSaved {
+	    sql: string;
+	    refused?: vmangos.ColumnError;
+	
+	    static createFrom(source: any = {}) {
+	        return new TemplateSaved(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sql = source["sql"];
+	        this.refused = this.convertValues(source["refused"], vmangos.ColumnError);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class WorldMapResult {
 	    row: vmangos.WorldMapRow;
@@ -587,7 +673,10 @@ export namespace mapfile {
 	export class VmangosFolder {
 	    dir: string;
 	    mapId: number;
-	    info?: number[];
+	    info?: object;
+	    tileX?: number;
+	    tileY?: number;
+	    tiles?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new VmangosFolder(source);
@@ -598,6 +687,9 @@ export namespace mapfile {
 	        this.dir = source["dir"];
 	        this.mapId = source["mapId"];
 	        this.info = source["info"];
+	        this.tileX = source["tileX"];
+	        this.tileY = source["tileY"];
+	        this.tiles = source["tiles"];
 	    }
 	}
 	export class ClientRegion {
@@ -675,8 +767,10 @@ export namespace mapfile {
 	    // Go type: ReferenceImage
 	    reference?: any;
 	    paths?: MapPath[];
+	    holesUnknown?: boolean;
 	    liquidsUnknown?: boolean;
 	    chunkDataUnknown?: boolean;
+	    liquidKinds?: Record<string, string>;
 	    version?: number;
 	    heights: string;
 	    weights?: string;
@@ -714,8 +808,10 @@ export namespace mapfile {
 	        this.tileEffects = source["tileEffects"];
 	        this.reference = this.convertValues(source["reference"], null);
 	        this.paths = this.convertValues(source["paths"], MapPath);
+	        this.holesUnknown = source["holesUnknown"];
 	        this.liquidsUnknown = source["liquidsUnknown"];
 	        this.chunkDataUnknown = source["chunkDataUnknown"];
+	        this.liquidKinds = source["liquidKinds"];
 	        this.version = source["version"];
 	        this.heights = source["heights"];
 	        this.weights = source["weights"];
@@ -794,6 +890,25 @@ export namespace sandbox {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.size = source["size"];
 	        this.modTime = source["modTime"];
+	    }
+	}
+
+}
+
+export namespace scripts {
+	
+	export class File {
+	    name: string;
+	    text: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new File(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.text = source["text"];
 	    }
 	}
 
@@ -1069,6 +1184,20 @@ export namespace vmangos {
 	        this.armor = source["armor"];
 	    }
 	}
+	export class ColumnError {
+	    column: string;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ColumnError(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.column = source["column"];
+	        this.message = source["message"];
+	    }
+	}
 	export class CreatureSpell {
 	    spell: number;
 	    probability: number;
@@ -1217,6 +1346,24 @@ export namespace vmangos {
 	        this.type = source["type"];
 	        this.names = source["names"];
 	        this.uses = source["uses"];
+	    }
+	}
+	export class DoodadUse {
+	    path: string;
+	    count: number;
+	    scaleMin: number;
+	    scaleMax: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DoodadUse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.count = source["count"];
+	        this.scaleMin = source["scaleMin"];
+	        this.scaleMax = source["scaleMax"];
 	    }
 	}
 	export class EdgeSegment {
@@ -1533,9 +1680,10 @@ export namespace vmangos {
 	export class HeaderSpec {
 	    chunk: number;
 	    areaId: number;
-	    impassable: boolean;
+	    impassable?: boolean;
 	    noEffect?: number[];
 	    holes?: number[];
+	    holesAdd?: boolean;
 	    shadow?: number[];
 	
 	    static createFrom(source: any = {}) {
@@ -1549,6 +1697,7 @@ export namespace vmangos {
 	        this.impassable = source["impassable"];
 	        this.noEffect = source["noEffect"];
 	        this.holes = source["holes"];
+	        this.holesAdd = source["holesAdd"];
 	        this.shadow = source["shadow"];
 	    }
 	}
@@ -1581,6 +1730,62 @@ export namespace vmangos {
 	        this.id = source["id"];
 	        this.added = source["added"];
 	    }
+	}
+	export class SpellRef {
+	    id: number;
+	    name: string;
+	    rank: string;
+	    icon: string;
+	    text: string;
+	    visual: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SpellRef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.rank = source["rank"];
+	        this.icon = source["icon"];
+	        this.text = source["text"];
+	        this.visual = source["visual"];
+	    }
+	}
+	export class IconSpells {
+	    spellIconId: number;
+	    count: number;
+	    spells: SpellRef[];
+	
+	    static createFrom(source: any = {}) {
+	        return new IconSpells(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.spellIconId = source["spellIconId"];
+	        this.count = source["count"];
+	        this.spells = this.convertValues(source["spells"], SpellRef);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class ItemDisplayEntry {
 	    id: number;
@@ -1710,6 +1915,8 @@ export namespace vmangos {
 	    name: string;
 	    quality: number;
 	    displayId: number;
+	    itemLevel?: number;
+	    requiredLevel?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ItemRef(source);
@@ -1721,6 +1928,8 @@ export namespace vmangos {
 	        this.name = source["name"];
 	        this.quality = source["quality"];
 	        this.displayId = source["displayId"];
+	        this.itemLevel = source["itemLevel"];
+	        this.requiredLevel = source["requiredLevel"];
 	    }
 	}
 	export class ItemSetBonus {
@@ -1778,6 +1987,54 @@ export namespace vmangos {
 		}
 	}
 	
+	export class NamedID {
+	    id: number;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new NamedID(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	    }
+	}
+	export class ItemTables {
+	    sets: NamedID[];
+	    spellCategories: NamedID[];
+	    maps: NamedID[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ItemTables(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sets = this.convertValues(source["sets"], NamedID);
+	        this.spellCategories = this.convertValues(source["spellCategories"], NamedID);
+	        this.maps = this.convertValues(source["maps"], NamedID);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	export class LightKey {
 	    t: number;
@@ -1945,6 +2202,55 @@ export namespace vmangos {
 	        this.pixels = source["pixels"];
 	    }
 	}
+	export class LockPart {
+	    type: number;
+	    index: number;
+	    skill: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LockPart(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.type = source["type"];
+	        this.index = source["index"];
+	        this.skill = source["skill"];
+	    }
+	}
+	export class LockInfo {
+	    id: number;
+	    parts: LockPart[];
+	
+	    static createFrom(source: any = {}) {
+	        return new LockInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.parts = this.convertValues(source["parts"], LockPart);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class LookResult {
 	    model: string;
 	    look: string;
@@ -2225,7 +2531,7 @@ export namespace vmangos {
 	export class MinimapTile {
 	    x: number;
 	    y: number;
-	    pixels: number[];
+	    pixels: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new MinimapTile(source);
@@ -2238,18 +2544,21 @@ export namespace vmangos {
 	        this.pixels = source["pixels"];
 	    }
 	}
-	export class NamedID {
-	    id: number;
-	    name: string;
+	
+	export class ObjectDisplaySounds {
+	    display: number;
+	    model: string;
+	    sounds: number[];
 	
 	    static createFrom(source: any = {}) {
-	        return new NamedID(source);
+	        return new ObjectDisplaySounds(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.name = source["name"];
+	        this.display = source["display"];
+	        this.model = source["model"];
+	        this.sounds = source["sounds"];
 	    }
 	}
 	export class ObjectLoot {
@@ -2289,6 +2598,50 @@ export namespace vmangos {
 		}
 	}
 	
+	export class ObjectTables {
+	    locks: LockInfo[];
+	    lockTypes: NamedID[];
+	    languages: NamedID[];
+	    pageMaterials: NamedID[];
+	    spellFocus: NamedID[];
+	    cinematics: NamedID[];
+	    taxiPaths: NamedID[];
+	    auctionHouses: NamedID[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ObjectTables(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.locks = this.convertValues(source["locks"], LockInfo);
+	        this.lockTypes = this.convertValues(source["lockTypes"], NamedID);
+	        this.languages = this.convertValues(source["languages"], NamedID);
+	        this.pageMaterials = this.convertValues(source["pageMaterials"], NamedID);
+	        this.spellFocus = this.convertValues(source["spellFocus"], NamedID);
+	        this.cinematics = this.convertValues(source["cinematics"], NamedID);
+	        this.taxiPaths = this.convertValues(source["taxiPaths"], NamedID);
+	        this.auctionHouses = this.convertValues(source["auctionHouses"], NamedID);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ObjectTemplate {
 	    entry: number;
 	    name: string;
@@ -2520,6 +2873,7 @@ export namespace vmangos {
 	    sorts: NamedID[];
 	    skills: NamedID[];
 	    factions: NamedID[];
+	    mailTemplates: NamedID[];
 	
 	    static createFrom(source: any = {}) {
 	        return new QuestTables(source);
@@ -2530,6 +2884,7 @@ export namespace vmangos {
 	        this.sorts = this.convertValues(source["sorts"], NamedID);
 	        this.skills = this.convertValues(source["skills"], NamedID);
 	        this.factions = this.convertValues(source["factions"], NamedID);
+	        this.mailTemplates = this.convertValues(source["mailTemplates"], NamedID);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2650,6 +3005,7 @@ export namespace vmangos {
 	    building: boolean;
 	    wdt: boolean;
 	    files: number;
+	    waiting: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new RegionResult(source);
@@ -2667,6 +3023,7 @@ export namespace vmangos {
 	        this.building = source["building"];
 	        this.wdt = source["wdt"];
 	        this.files = source["files"];
+	        this.waiting = source["waiting"];
 	    }
 	}
 	export class RegionShadows {
@@ -2753,6 +3110,32 @@ export namespace vmangos {
 	        this.deleted = source["deleted"];
 	        this.skipped = source["skipped"];
 	        this.live = source["live"];
+	    }
+	}
+	export class ScriptCommand {
+	    delay: number;
+	    command: number;
+	    data: number[];
+	    x: number;
+	    y: number;
+	    z: number;
+	    o: number;
+	    comments: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ScriptCommand(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.delay = source["delay"];
+	        this.command = source["command"];
+	        this.data = source["data"];
+	        this.x = source["x"];
+	        this.y = source["y"];
+	        this.z = source["z"];
+	        this.o = source["o"];
+	        this.comments = source["comments"];
 	    }
 	}
 	export class SoundOption {
@@ -3007,6 +3390,28 @@ export namespace vmangos {
 		    return a;
 		}
 	}
+	export class SpawnScript {
+	    kind: string;
+	    id: number;
+	    name: string;
+	    commands: number;
+	    comment: string;
+	    table: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SpawnScript(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.commands = source["commands"];
+	        this.comment = source["comment"];
+	        this.table = source["table"];
+	    }
+	}
 	export class SpawnTeleport {
 	    label: string;
 	    dest: TriggerTeleport;
@@ -3124,28 +3529,6 @@ export namespace vmangos {
 		}
 	}
 	
-	export class SpellRef {
-	    id: number;
-	    name: string;
-	    rank: string;
-	    icon: string;
-	    text: string;
-	    visual: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new SpellRef(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.name = source["name"];
-	        this.rank = source["rank"];
-	        this.icon = source["icon"];
-	        this.text = source["text"];
-	        this.visual = source["visual"];
-	    }
-	}
 	export class SpellList {
 	    spells: SpellRef[];
 	    total: number;
@@ -3282,6 +3665,9 @@ export namespace vmangos {
 	    durations: SpellOption[];
 	    ranges: SpellOption[];
 	    radii: SpellOption[];
+	    globalCategories: NamedID[];
+	    icons: NamedID[];
+	    enchantments: NamedID[];
 	
 	    static createFrom(source: any = {}) {
 	        return new SpellTables(source);
@@ -3293,6 +3679,9 @@ export namespace vmangos {
 	        this.durations = this.convertValues(source["durations"], SpellOption);
 	        this.ranges = this.convertValues(source["ranges"], SpellOption);
 	        this.radii = this.convertValues(source["radii"], SpellOption);
+	        this.globalCategories = this.convertValues(source["globalCategories"], NamedID);
+	        this.icons = this.convertValues(source["icons"], NamedID);
+	        this.enchantments = this.convertValues(source["enchantments"], NamedID);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -3512,6 +3901,20 @@ export namespace vmangos {
 		}
 	}
 	
+	export class TextureUse {
+	    path: string;
+	    share: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TextureUse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.share = source["share"];
+	    }
+	}
 	
 	
 	export class VendorItem {
@@ -3806,6 +4209,7 @@ export namespace vmangos {
 	
 	export class Zone {
 	    MapID: number;
+	    AreaID: number;
 	    Name: string;
 	    X0: number;
 	    Y0: number;
@@ -3819,12 +4223,45 @@ export namespace vmangos {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.MapID = source["MapID"];
+	        this.AreaID = source["AreaID"];
 	        this.Name = source["Name"];
 	        this.X0 = source["X0"];
 	        this.Y0 = source["Y0"];
 	        this.X1 = source["X1"];
 	        this.Y1 = source["Y1"];
 	    }
+	}
+	export class ZoneDoodadList {
+	    doodads: DoodadUse[];
+	    landArea: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ZoneDoodadList(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.doodads = this.convertValues(source["doodads"], DoodadUse);
+	        this.landArea = source["landArea"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class ZoneSoundTables {
 	    music: SoundOption[];
@@ -3891,6 +4328,7 @@ export namespace wow {
 	    error: string;
 	    files: number;
 	    archives: number;
+	    started: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Status(source);
@@ -3903,6 +4341,7 @@ export namespace wow {
 	        this.error = source["error"];
 	        this.files = source["files"];
 	        this.archives = source["archives"];
+	        this.started = source["started"];
 	    }
 	}
 

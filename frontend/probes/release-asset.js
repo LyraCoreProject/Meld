@@ -1,4 +1,5 @@
 // Thumbnails and previews let go of their models' own materials (#506): a model with a moving texture or colour built and released as a thumbnail is, and the Preview window opened and closed on it, leave the per-frame animated lists as they were.
+// touches: frontend/src/lib/models/assets.ts, frontend/src/lib/wow/thumbs.ts, frontend/src/components/ModelPreviewWindow.svelte, frontend/src/components/AssetPreview.svelte
 await P.scene(P.BENCH)
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 const assets = await P.app('/src/lib/models/assets.ts')
@@ -17,6 +18,13 @@ for (const t of types.slice(0, 300)) {
 	}
 }
 if (!type) throw new Error('no model with a moving texture or colour in the benchmark scene')
+
+// The scene streams its models in, and the shared materials of one it has not loaded yet join the
+// animated lists as it arrives (#690: after a busy probe it arrived while the Preview window was open,
+// and the count never came back to where the thumbnails left it). Load this one and let the page go
+// quiet first, so only what the thumbnails and the Preview window do moves the count.
+await assets.loadAsset(type.slice(3))
+await P.settle()
 
 // As thumbs.ts draws one, many times over.
 const before = assets.animatedCount()

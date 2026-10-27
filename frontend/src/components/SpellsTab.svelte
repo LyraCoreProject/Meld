@@ -1,10 +1,12 @@
 <script lang="ts">
-	import { startSaving } from '../lib/state/saving'
+	import { idMenu, idOf } from '../lib/ui/copyId'
 	import { ReadCreatureSpells, SaveCreatureSpells } from '../../wailsjs/go/main/App'
 	import { vmangos } from '../../wailsjs/go/models'
 	import { setStatus } from '../lib/state/editor.svelte'
-	import { CAST_FLAGS, CAST_TARGETS, castTarget, spellLabel } from '../lib/wow/creatureSpellNames'
+	import { CAST_FLAGS, CAST_TARGETS, SELECT_FLAGS, castTarget, paramKind, spellLabel } from '../lib/wow/creatureSpellNames'
 	import { spellRef } from '../lib/wow/spells'
+	import { RowList, moveRow, removeRow } from '../lib/ui/rowList.svelte'
+	import RefField from './RefField.svelte'
 	import SpellIcon from './SpellIcon.svelte'
 	import SpellPicker from './SpellPicker.svelte'
 
@@ -17,38 +19,30 @@
 	/** The most spells a creature_spells row holds. */
 	const SLOTS = 8
 
-	let {
-		entry,
-		onsaved,
-		dirty = $bindable(false),
-	}: { entry: number; onsaved: (listId: number) => void; dirty?: boolean } = $props()
+	let { entry, onsaved, dirty = $bindable(false) }: { entry: number; onsaved: (listId: number) => void; dirty?: boolean } = $props()
 
 	let list = $state<vmangos.CreatureSpells | null>(null)
-	let spells = $state<vmangos.CreatureSpell[]>([])
-	let saved = $state('[]')
-	let loading = $state(false)
-	let saving = $state(false)
-	let error = $state('')
+	const rows = new RowList<vmangos.CreatureSpell[]>({
+		empty: [],
+		read: async () => {
+			const c = await ReadCreatureSpells(entry)
+			list = c
+			// Plain objects, which the state proxies (a class instance it would not), so an edit in place shows and counts.
+			return (c.spells ?? []).map((s): vmangos.CreatureSpell => ({ ...s }))
+		},
+	})
+	rows.follow(() => entry)
+	$effect(() => {
+		dirty = rows.dirty
+	})
 
 	/** The client's spells by ID, for the list's names, icons and text. */
 	let refs = $state<Record<number, vmangos.SpellRef | null>>({})
 
-	const key = (l: vmangos.CreatureSpell[]) => JSON.stringify(l)
-	$effect(() => {
-		dirty = key(spells) !== saved
-	})
-
-	let loadedFor = -1
-	$effect(() => {
-		if (entry === loadedFor) return
-		loadedFor = entry
-		void load()
-	})
-
 	// Every spell in the list gets its name, icon and text from the client.
 	const asked = new Set<number>()
 	$effect(() => {
-		for (const s of spells) {
+		for (const s of rows.rows) {
 			const id = s.spell
 			if (asked.has(id)) continue
 			asked.add(id)
@@ -56,51 +50,22 @@
 		}
 	})
 
-	async function load() {
-		loading = true
-		error = ''
-		try {
-			const c = await ReadCreatureSpells(entry)
-			list = c
-			spells = (c.spells ?? []).map((s) => vmangos.CreatureSpell.createFrom({ ...s }))
-			saved = key(spells)
-		} catch (err) {
-			error = String(err)
-		} finally {
-			loading = false
-		}
+	/** Drops the unsaved spells (the tab's Revert, the editor's Discard). */
+	export function revert() {
+		void rows.revert()
 	}
 
-	async function save() {
-		saving = true
-		const end = startSaving("Saving the creature's spells")
-		error = ''
-		try {
+	function save() {
+		void rows.save("Saving the creature's spells", async (spells) => {
 			const r = await SaveCreatureSpells(entry, spells)
 			const before = list?.listId ?? 0
-			saved = key(spells)
+			rows.markSaved()
 			if (r.listId !== before) onsaved(r.listId)
-			await load()
-			const what = spells.length ? `${spells.length} ${spells.length === 1 ? 'spell' : 'spells'} in list ${r.listId}` : 'no spells'
+			const n = spells.length
+			await rows.load()
+			const what = n ? `${n} ${n === 1 ? 'spell' : 'spells'} in list ${r.listId}` : 'no spells'
 			setStatus(`Saved the spells of creature ${entry} (${what}). Restart the world server to see it in the game.`, 10000)
-		} catch (err) {
-			error = String(err)
-		} finally {
-			saving = false
-			end()
-		}
-	}
-
-	function move(i: number, d: number) {
-		const j = i + d
-		if (j < 0 || j >= spells.length) return
-		const l = [...spells]
-		;[l[i], l[j]] = [l[j], l[i]]
-		spells = l
-	}
-
-	function remove(i: number) {
-		spells = spells.filter((_, k) => k !== i)
+		})
 	}
 
 	function num(v: string, max: number): number {
@@ -140,56 +105,56 @@
 		}
 	}
 
+	/** Every select flag the list names, to show the bits it doesn't. */
+	const SELECT_MASK = SELECT_FLAGS.reduce((m, f) => m | f.bit, 0)
+
 	const flagCount = (f: number) => CAST_FLAGS.filter((c) => f & c.bit).length
 
 	/** Adds a spell the picker (#340) found, with the usual timings. */
 	function add(r: vmangos.SpellRef) {
-		if (spells.length >= SLOTS) {
+		if (rows.rows.length >= SLOTS) {
 			setStatus(`A creature casts at most ${SLOTS} spells from its list.`, 4000)
 			return
 		}
 		refs[r.id] = r
 		asked.add(r.id)
-		spells = [
-			...spells,
-			vmangos.CreatureSpell.createFrom({ spell: r.id, probability: 100, castTarget: 1, targetParam1: 0, targetParam2: 0, castFlags: 0, initialMin: 5, initialMax: 10, repeatMin: 10, repeatMax: 20, scriptId: 0 }),
-		]
+		rows.rows = [...rows.rows, { spell: r.id, probability: 100, castTarget: 1, targetParam1: 0, targetParam2: 0, castFlags: 0, initialMin: 5, initialMax: 10, repeatMin: 10, repeatMax: 20, scriptId: 0 }]
 	}
 </script>
 
 <div class="spells">
-	{#if error}<p class="error">{error}</p>{/if}
+	{#if rows.error}<p class="error">{rows.error}</p>{/if}
 
 	<div class="head">
-		<h3>Casts in combat{spells.length ? ` (${spells.length} of ${SLOTS})` : ''}</h3>
-		<button disabled={!dirty || saving} onclick={() => void load()}>Revert</button>
-		<button class="active" disabled={!dirty || saving} onclick={save}>{saving ? 'Saving…' : dirty ? 'Save spells' : 'Saved'}</button>
+		<h3>Casts in combat{rows.rows.length ? ` (${rows.rows.length} of ${SLOTS})` : ''}</h3>
+		<button disabled={!rows.dirty || rows.saving} onclick={revert}>Revert</button>
+		<button class="active" disabled={!rows.dirty || rows.saving} onclick={save}>{rows.saving ? 'Saving…' : rows.dirty ? 'Save spells' : 'Saved'}</button>
 	</div>
 	{#if list && list.listId > 0 && list.shared > 1}
 		<p class="warn">Spell list {list.listId} is shared with {list.shared - 1} other {list.shared === 2 ? 'creature' : 'creatures'}. Saving gives this creature its own copy and leaves theirs as they are.</p>
 	{:else if list && list.listId > 0}
 		<p class="dim">Spell list {list.listId}{list.name ? `, ${list.name}` : ''}.</p>
 	{/if}
-	{#if loading}
+	{#if rows.loading}
 		<p class="dim">Loading the spells…</p>
-	{:else if spells.length === 0}
+	{:else if rows.rows.length === 0}
 		<p class="dim">No spells yet. Find spells below and click one to add it; saving gives the creature a spell list.</p>
 	{:else}
 		<ol class="list">
-			{#each spells as s, i (i)}
+			{#each rows.rows as s, i (i)}
 				{@const ref = refs[s.spell]}
 				{@const target = castTarget(s.castTarget)}
 				<li>
-					<div class="title">
+					<div class="title" use:idMenu={{ ids: [idOf('spell', s.spell)], name: ref?.name }}>
 						<SpellIcon icon={ref?.icon ?? ''} size={28} />
 						<div class="name">
 							<span>{ref ? spellLabel(ref.name, ref.rank) : ref === null ? spellLabel('', '') : '…'}</span>
 							<span class="dim">{s.spell}</span>
 						</div>
 						<div class="row-actions">
-							<button title="Move up" disabled={i === 0} onclick={() => move(i, -1)}>↑</button>
-							<button title="Move down" disabled={i === spells.length - 1} onclick={() => move(i, 1)}>↓</button>
-							<button title="Remove" onclick={() => remove(i)}>✕</button>
+							<button title="Move up" disabled={i === 0} onclick={() => (rows.rows = moveRow(rows.rows, i, -1))}>↑</button>
+							<button title="Move down" disabled={i === rows.rows.length - 1} onclick={() => (rows.rows = moveRow(rows.rows, i, 1))}>↓</button>
+							<button title="Remove" onclick={() => (rows.rows = removeRow(rows.rows, i))}>✕</button>
 						</div>
 					</div>
 					{#if ref?.text}<p class="text">{ref.text}</p>{/if}
@@ -204,12 +169,8 @@
 								{#if !CAST_TARGETS.some((t) => t.id === s.castTarget)}<option value={s.castTarget}>{target.name}</option>{/if}
 							</select>
 						</label>
-						{#if target.params[0]}
-							<label>{target.params[0]} <input type="number" min="0" max="65535" value={s.targetParam1} oninput={(e) => (s.targetParam1 = num(e.currentTarget.value, 65535))} /></label>
-						{/if}
-						{#if target.params[1]}
-							<label>{target.params[1]} <input type="number" min="0" max="65535" value={s.targetParam2} oninput={(e) => (s.targetParam2 = num(e.currentTarget.value, 65535))} /></label>
-						{/if}
+						{#if target.params[0]}{@render param(s, 'targetParam1', target.params[0])}{/if}
+						{#if target.params[1]}{@render param(s, 'targetParam2', target.params[1])}{/if}
 						<label title="Seconds after the fight starts, a random time from the first to the second"
 							>First cast (s)
 							<span class="pair"
@@ -239,8 +200,27 @@
 	{/if}
 
 	<h3>Add spells</h3>
-	<SpellPicker memoryKey="creature" start="npc" onpick={add} disabled={spells.length >= SLOTS} title={spells.length >= SLOTS ? `The list is full (${SLOTS} spells)` : 'Add it to the creature'} />
+	<SpellPicker memoryKey="creature" start="npc" onpick={add} disabled={rows.rows.length >= SLOTS} title={rows.rows.length >= SLOTS ? `The list is full (${SLOTS} spells)` : 'Add it to the creature'} />
 </div>
+
+{#snippet param(s: vmangos.CreatureSpell, key: 'targetParam1' | 'targetParam2', label: string)}
+	{@const kind = paramKind(label)}
+	{#if kind === 'creature' || kind === 'spell'}
+		<RefField f={{ col: key === 'targetParam1' ? 'target_param1' : 'target_param2', label, ref: kind }} value={String(s[key])} changed={false} onset={(v) => (s[key] = num(v, 65535))} />
+	{:else if kind === 'select flags'}
+		<fieldset class="wide select-flags">
+			<legend>{label}</legend>
+			{#each SELECT_FLAGS as f (f.bit)}
+				<label class="check"><input type="checkbox" checked={(s[key] & f.bit) !== 0} onchange={(e) => (s[key] = e.currentTarget.checked ? s[key] | f.bit : s[key] & ~f.bit)} /> {f.name}</label>
+			{/each}
+			{#if s[key] & ~SELECT_MASK}<span class="dim">Other bits: {s[key] & ~SELECT_MASK}</span>{/if}
+		</fieldset>
+	{:else if kind === 'bool'}
+		<label class="check" title="Leave out the creature's current target"><input type="checkbox" checked={s[key] !== 0} onchange={(e) => (s[key] = e.currentTarget.checked ? 1 : 0)} /> {label}</label>
+	{:else}
+		<label>{label} <input type="number" min="0" max="65535" value={s[key]} oninput={(e) => (s[key] = num(e.currentTarget.value, 65535))} /></label>
+	{/if}
+{/snippet}
 
 <style>
 	.spells {
@@ -323,6 +303,25 @@
 	}
 	.grid label.wide {
 		grid-column: span 2;
+	}
+	.grid label.check {
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
+	}
+	.select-flags {
+		grid-column: 1 / -1;
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+		gap: 2px 10px;
+		margin: 0;
+		padding: 4px 8px 6px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		color: var(--text-dim);
+	}
+	.grid .check input {
+		width: auto;
 	}
 	.grid input,
 	.grid select {

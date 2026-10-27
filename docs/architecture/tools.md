@@ -5,6 +5,13 @@ How the tools take input and record undo, the brushes, and selection, clipboard 
 - **Tools** implement `Tool` (`lib/tools/Tool.ts`):
   - LMB goes to the active tool; RMB and MMB belong to the camera.
   - `tick(dt)` runs every frame while the button is held, so scale effects by `dt`.
+  - **Ghosts** (the Place tool's preview, a model paste's, the Doodad and Spawn brushes' plans) live
+    in a `GhostPool` (`tools/ghosts.ts`): its group goes into the scene on `activate` (`attach`) and
+    out on `deactivate` (`detach`), `grow(n)` adds slots, and `show(i, asset)` swaps a slot's mesh
+    when the asset's geometry or skeleton changed and runs the asset's particles on it. Use it for a
+    new tool's previews rather than swapping meshes by hand.
+  - A step that adds or removes models records undo through `addedCommand` / `removedCommand`
+    (`world/objectCommands.ts`), which copy the models and take the map's `ObjectLayer`.
   - Brush size follows Photoshop (`tools/brushSize.ts`): `[` `]` and Ctrl+scroll step the radius
     through size bands (`stepRadius`, via `Engine.stepBrush`), Shift+`[` `]` step the falloff, and
     Alt+right-drag (`Engine.sizeDrag`, which the camera leaves alone through `rightBlocked`) sizes
@@ -40,7 +47,23 @@ How the tools take input and record undo, the brushes, and selection, clipboard 
     Its "Mask where sediment settled" option (#242, `editor.erode.mask`) replaces the paint mask, in
     the same step, with each vertex's rise (dropped sediment and slid scree, bilinear to the mask's
     texels, full at `SETTLED_FULL` = 1 yd; `settledMask`), so Fill Mask lays dirt or gravel there.
-  - Object tools push `Command`s (`addCommand`, `removeCommand`, `transformCommand`).
+  - Terrain › Smooth Selection (#713, `Engine.smoothArea`, `SmoothAreaDialog.svelte`,
+    `terrain/smoothArea.ts`) runs Sculpt › Smooth's 3x3 average (separable, `smoothPass`) over the
+    same vertices Erode takes (`areaVertexWeights`: the rectangle or the free-form shape) or the whole
+    map: `editor.smoothArea.passes` passes, each moving a vertex `strength` of the way to its average
+    (the brush moves it `min(1, strength × 10 × seconds)`, so a pass at 1 is a tenth of a second of
+    the brush at full strength). With `falloff` the weights fade in from the area's edge over `width`
+    yards (`fadeFromEdge`, a chamfer distance and a smoothstep). Sliced between frames with progress
+    and Cancel, written as one undo step ("Smooth selection" / "Smooth map") with the models re-snapped.
+    Its Mode (#721, `editor.smoothArea.mode`, the menu's "Raise, Lower, Flatten or Roughen
+    Selection…", which opens on the last shape picked, `shape`) runs one unsliced pass instead
+    (`shapePatch`) over the same weights and falloff: Raise or Lower by `amount` yards, Flatten to the
+    area's mean (of the vertices with a weight) or to `height`, or Roughen with Sculpt › Noise's `fbm`
+    in world space (`amount` yards up or down, bumps `scale` yards across, `seed`). Undo labels
+    "Raise selection" and so on. With the falloff off, Raise and Lower make a cliff at the area's
+    edge: that is expected, the falloff is what blends.
+  - Object tools push `Command`s: `addedCommand` and `removedCommand` (`world/objectCommands.ts`) for
+    models added or removed, `transformCommand` (`tools/ObjectTools.ts`) for a move.
   - **Every edit must be undoable** through `History`.
 - **Stamp** (`tools/StampTool.ts`, tool `stamp`, key 0) applies a brush stack (`tools/brushStack.ts`,
   `prefs.brushStacks`, edited in `BrushStackDialog.svelte`): each brush of the stack runs a pooled Sculpt or
@@ -69,12 +92,13 @@ How the tools take input and record undo, the brushes, and selection, clipboard 
   placement rules (`PlacementRules`, `rulesAllow`, the TOML's `[rules]`: slope and height ranges, on
   and not-on textures, liquids, holes) and each model an `align` toward the slope; Terrain › Fill
   Selection / Fill Mask with Doodad Brush runs it over a whole area as one undo step
-  (`DoodadBrushTool.fill`, spaced through a `SpacingGrid`).
+  (`DoodadBrushTool.fill`, spaced through a `SpacingGrid`; its `FillOptions` let a new world's trees,
+  #758, set the attempts, a keep chance by place and the brush's rules alone).
   Its Creatures mode (`editor.doodadMode`, #171) hands the input to the spawn brush
   (`tools/SpawnBrushTool.ts`, `tools/spawnBrush.ts`, `prefs.spawnBrush`): creature templates with weights,
   picked in the browser's Creatures tab, filled to a density (creatures per 100 by 100 yd) and spacing,
   with the brush's level, wander, respawn and facing; the Engine supplies guids and looks
-  (`brushCreature`, `brushLook`). A stroke is one undo step of ordinary unsaved spawn edits.
+  (`SpawnActions.brushCreature`, `brushLook`). A stroke is one undo step of ordinary unsaved spawn edits.
 
 - **Paths** (`tools/PathTool.ts`, tool `path`, key K, #167): roads, rivers and fences drawn along a spline,
   as Unreal's landscape splines. A path (`terrain/paths.ts`, `MapPath`) is control points plus its settings
@@ -107,7 +131,8 @@ How the tools take input and record undo, the brushes, and selection, clipboard 
   - A drag on the ground selects an **area**, `editor.selection` in cell/vertex coordinates, and
     with it every model standing in it. The terrain shader draws the area (`selRect`/`selMode`,
     marching ants; a free-form shape's cells through `Terrain.setAreaShape`, the green of `cellTex`). `Engine.setHoleInSelection` cuts or fills holes in it.
-  - The holes' edges show as walls (`tools/HoleWalls.ts`, also in Sculpt › Hole): ribbons along each
+  - The holes' edges show as walls (`tools/HoleWalls.ts`, also in Sculpt › Hole; one for the editor,
+    `ToolContext.holeWalls`, made by the Engine and attached by whichever of the two is active): ribbons along each
     straight run of hole boundary, dragged to move it or clicked through + and − badges. They draw
     over everything (depthTest off), so they fade out with the camera's distance and show only near
     the camera or round the cursor (`wallFade` in `terrain/holes.ts`, #249).
@@ -116,6 +141,11 @@ How the tools take input and record undo, the brushes, and selection, clipboard 
     bounds, and count only while that rect and map are unchanged, so code that sets a plain rect needs
     no change. Cut hole, mask, the Layers chunk list, copy/paste (`MapClip.cells`), the doodad fill and
     Grow/Shrink Selected Area follow the shape; the shader draws it from a cell texture (`selMode` 3).
+  - Every shape adds and subtracts as in Photoshop (#183, #712): Shift adds what it draws to the area,
+    Ctrl takes it out, a plain drag replaces it, and the models follow the final area
+    (`SelectTool.commitArea`, `combineArea` in `terrain/areaShape.ts`). An add or subtract rect leaves
+    `editor.selection` alone while dragged and is drawn as an outline (`rectOutline`) over the area there is;
+    a Shift or Ctrl click without a drag changes nothing, a plain one clears the area.
   - `editor.selectedIds` holds every selected object and `editor.selected` the primary one (the
     gizmo and the Properties sliders work on it). Change them through `lib/state/selection.ts`
     (`selectObjects`), never by hand. Delete, hide, nudge and focus act on the whole selection.
@@ -144,7 +174,16 @@ How the tools take input and record undo, the brushes, and selection, clipboard 
     its footprint, or another prop's box meeting its own), so an author sees when a model is
     attached. The mask's B channel carries it per model.
   - `TransformGizmo` provides a ring (spin) and an up/down arrow (height). Gizmo drags are
-    handled in `Engine` before tools get the pointer, and each drag is one undo step.
+    handled before tools get the pointer, by `engine/GizmoDrag.ts` over a narrow `GizmoHost` (#555;
+    Engine's `startGizmoDrag`, `updateGizmoDrag` and `endGizmoDrag` forward to it): one model, a
+    multi-selection about its pivot (`groupSpot`) and a selected spawn's ring and arrow, with one
+    drag-plane setup (`grab`: the ring's flat plane through the centre, or an upright one facing the
+    camera for the arrow) and the Shift snaps in `snapAngle` (15°) and `snapHalfYard`; a scale is
+    kept through `placement.ts` `clampScale` (0.05..20, to a hundredth), as the Place tool's is.
+    Each drag is one undo step, pushed on release (`tests/gizmoDrag.test.ts`). A tab switch
+    or close with the button held ends the drag on the outgoing tab first (`Engine.endInteractions`,
+    called from `activate`, as a stroke gets its `onUp`): its step goes into that tab's History, a
+    flight-path drag is handed to the window, and a brush-size drag or the path test is dropped (#549).
   - Red parts of the outline are decided per pixel in the mask shader: below the terrain (from
     `Terrain.heightTexture()`, shared with the terrain, which uploads only the edited rect) or inside an overlapping prop's box (`Engine.overlappingBoxes`, up to
     8). The edge pass colours the stroke from the neighbouring mask pixels.

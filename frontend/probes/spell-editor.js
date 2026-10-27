@@ -1,4 +1,5 @@
-// The spell editor (#294): Tools › Spells… lists leftover test spells (#367) and finds Fireball (133), whose right-click copies `.cast 133`, shows its tooltip as the game does (rank, cost, range, cast time, the description's tokens filled in), its effects in a line each and its visual's other users; a typed name and base points change the tooltip before saving, the Effect 1 tab names the effect, Save refuses a cost past an unsigned int and jumps to its tab, Change icon… previews a hovered icon and marks a picked one for Save, Take the visual of Frost Nova sets the visual, Revert drops it all, Export… and Import… are there (#357), and New spell offers the six starters and a copy of the open spell, the copy picked; nothing written.
+// The spell editor (#294): Tools › Spells… finds Fireball (133), whose right-click copies `.cast 133`, shows its tooltip as the game does (rank, cost, range, cast time, the description's tokens filled in), its effects in a line each and its visual's other users; a typed name and base points change the tooltip before saving, the Effect 1 tab names the effect, a cost past an unsigned int is an unsaved edit (Go refuses it, a Go test; Save is never pressed), Change icon… previews a hovered icon and marks a picked one for Save, Take the visual of Frost Nova sets the visual, Revert drops it all, Export… and Import… are there (#357), and New spell offers the six starters and a copy of the open spell, the copy picked; nothing written.
+// touches: frontend/src/components/SpellEditor.svelte, frontend/src/lib/world/spellFields.ts, frontend/src/lib/wow/spells.ts, internal/vmangos/spells.go, internal/vmangos/spelltext.go
 const { ui } = await P.state()
 P.e.newDocument(256, 'flat', 0, 'Probe')
 await P.frames(1)
@@ -13,21 +14,32 @@ const openTab = async (name) => {
 	button(root().querySelector('nav.tabs'), name).click()
 	await P.frames(1)
 }
-const field = (label) =>
-	[...root().querySelectorAll('.grid > label')].find((l) => (l.querySelector('span')?.textContent ?? l.firstChild?.textContent ?? '').split(' · ')[0].trim() === label)?.querySelector('input, select, textarea')
-const tooltip = () => [...root().querySelectorAll('.look .tip .line, .look .tip .tip-text')].map((l) => (l.querySelectorAll('span').length ? [...l.querySelectorAll('span')].map((s) => s.textContent.trim()).join(' | ') : l.textContent.trim()))
+const field = (label) => [...root().querySelectorAll('.grid > label')].find((l) => (l.querySelector('span')?.textContent ?? l.firstChild?.textContent ?? '').split(' · ')[0].trim() === label)?.querySelector('input, select, textarea')
+const tooltip = () =>
+	[...root().querySelectorAll('.look .tip .line, .look .tip .tip-text')].map((l) => (l.querySelectorAll('span').length ? [...l.querySelectorAll('span')].map((s) => s.textContent.trim()).join(' | ') : l.textContent.trim()))
 const effects = () => [...root().querySelectorAll('.effects li')].map((l) => l.textContent.trim())
 const actions = () => root().querySelector('header .actions')
 
 ui.spellEditor = { entry: 0 }
 await P.until(() => root(), WAIT, 'the editor')
-// The Find list browses every spell, leftovers too (#367): a test spell shows without a category change.
+// The Find list can browse every spell, leftovers too (#367). Whether the client holds any leftover test spell is up to its owner, so
+// the probe compares the lists instead: "every" holds all of what "all" lists for the same search (#421), whatever the client carries.
 const category = root().querySelector('aside select.category')
-category.value = 'every'
-category.dispatchEvent(new Event('change', { bubbles: true }))
-type(root().querySelector('aside input[type=search]'), 'test')
-await P.until(() => [...root().querySelectorAll('[aria-label="Spells found"] button')].some((b) => /\btest\b/i.test(b.textContent)), WAIT, 'the leftovers')
-const leftovers = root().querySelector('[aria-label="Spells found"]').children.length
+const found = () => [...root().querySelectorAll('[aria-label="Spells found"] button')]
+const pick = (value) => {
+	category.value = value
+	category.dispatchEvent(new Event('change', { bubbles: true }))
+}
+const search = root().querySelector('aside input[type=search]')
+type(search, 'Fireball')
+await P.until(() => found().some((b) => /Fireball.*133/.test(b.textContent)), WAIT, 'the every list')
+const everyCount = found().length
+pick('all')
+await P.until(() => category.value === 'all' && found().some((b) => /Fireball.*133/.test(b.textContent)), WAIT, 'the all list')
+const allCount = found().length
+pick('every')
+await P.until(() => category.value === 'every' && found().length === everyCount, WAIT, 'the every list again')
+const leftovers = everyCount - allCount
 type(root().querySelector('aside input[type=search]'), 'Fireball')
 await P.until(() => [...root().querySelectorAll('[aria-label="Spells found"] button')].some((b) => b.textContent.includes('133')), WAIT, 'the search')
 const hit = [...root().querySelectorAll('[aria-label="Spells found"] button')].find((b) => /Fireball.*Rank 1\b.*133/.test(b.textContent))
@@ -56,14 +68,10 @@ type(field('Base points'), '99')
 await P.frames(2)
 const edited = tooltip()
 
-// A cost past an unsigned int: refused before anything is written, on its tab.
+// A cost past an unsigned int is an unsaved edit; Go's refusal is a Go test (TestEditorSavesRefuseOutOfRangeValues, #419), so Save is never pressed.
 await openTab('Spell')
 type(field('Cost'), '99999999999')
 await openTab('Effect 2')
-button(actions(), 'Save').click()
-await P.until(() => root().querySelector('.bar.error'), WAIT, 'the refusal')
-const error = root().querySelector('.bar.error').textContent.trim()
-const jumped = root().querySelector('nav.tabs button.on')?.textContent.trim()
 
 // Change icon…: the grid previews the icon under the pointer, a click picks it, Change icon marks it for Save.
 button(root().querySelector('.look'), 'Change icon').click()
@@ -115,11 +123,9 @@ const ok =
 	/Probe Bolt/.test(edited[0]) &&
 	edited.some((l) => /100 to 108 Fire damage/.test(l)) &&
 	/^Damage/.test(summary) &&
-	/manaCost/.test(error) &&
-	jumped?.startsWith('Spell') &&
 	/^Now Spell_Fire_FlameBolt\. Showing \w+/.test(hovering) &&
 	/Set on Save/.test(picked) &&
-	leftovers > 0 &&
+	leftovers >= 0 &&
 	visualAfter !== visualBefore &&
 	/\(\d\)/.test(saveText) &&
 	reverted &&
@@ -128,4 +134,4 @@ const ok =
 	starts[0] === 'Bolt' &&
 	startOn === 'Copy of Fireball' &&
 	newName === 'Fireball'
-return { ok, leftovers, scripts, menu, title, tip, fx, visualText, summary, edited, error, jumped, firstIcon, hovering, picked, visualBefore, visualAfter, saveText, reverted, starts, startOn, newName }
+return { ok, leftovers, scripts, menu, title, tip, fx, visualText, summary, edited, firstIcon, hovering, picked, visualBefore, visualAfter, saveText, reverted, starts, startOn, newName }

@@ -26,6 +26,12 @@ const IronforgeMarker = "(ironforge)"
 // BackupSuffix is added to an existing patch before Meld first replaces it.
 const BackupSuffix = ".before-meld"
 
+// PrevSuffix is added to the patch each write replaces, overwriting the one before (#475): the patch is
+// the only copy of the client-table edits (spells, icons, lights, areas, taxis, world maps), so a
+// write that drops entries by mistake can be undone by hand from it. The client and Meld's reader load
+// only *.MPQ, so they never see it.
+const PrevSuffix = ".prev"
+
 // CheckServer reports whether dir looks like a VMaNGOS server folder: it has the configuration and
 // the map data the update script writes.
 func CheckServer(dir string) error {
@@ -100,12 +106,12 @@ func installPatch(dataDir string, files []mpq.File) (string, error) {
 	// Written beside the target and renamed over it, so a failed write leaves the old patch.
 	tmp := target + ".tmp"
 	if err := writeArchive(tmp, append(mpq.Entries(files), keep...)); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return "", err
 	}
 	if old != nil {
 		// Windows doesn't rename over a file still open.
-		old.Close()
+		_ = old.Close()
 	}
 	// Meld's own reader lets go of the archives for the rename only, then forgets what it decoded
 	// from the files this write changed (#471).
@@ -113,7 +119,7 @@ func installPatch(dataDir string, files []mpq.File) (string, error) {
 	if reader != nil {
 		reader.Suspend()
 	}
-	err := replaceFile(tmp, target)
+	err := replaceKeepingPrev(tmp, target, old != nil)
 	if reader != nil {
 		_ = reader.Resume()
 		if err == nil {
@@ -124,6 +130,30 @@ func installPatch(dataDir string, files []mpq.File) (string, error) {
 		return "", err
 	}
 	return target, nil
+}
+
+// replaceKeepingPrev renames tmp over target. When target exists (hadOld) it is first renamed to
+// target+PrevSuffix, replacing the previous one, and put back if the second rename fails, so the
+// patch is never left missing. tmp is removed on any failure.
+func replaceKeepingPrev(tmp, target string, hadOld bool) error {
+	if !hadOld {
+		return replaceFile(tmp, target)
+	}
+	prev := target + PrevSuffix
+	if err := os.Rename(target, prev); err != nil {
+		_ = os.Remove(tmp)
+		if inUse(err) {
+			return lockedError(target)
+		}
+		return fmt.Errorf("cannot keep the previous %s as %s: %w", PatchName, filepath.Base(prev), err)
+	}
+	if err := replaceFile(tmp, target); err != nil {
+		if rerr := os.Rename(prev, target); rerr != nil {
+			return fmt.Errorf("%w (and the previous patch stays at %s: %v)", err, prev, rerr)
+		}
+		return err
+	}
+	return nil
 }
 
 // ClientReader is Meld's own reader of the client's archives (wow.Client), which holds Meld's patch
@@ -167,15 +197,15 @@ func writeArchive(path string, files []mpq.Entry) error {
 	}
 	w := bufio.NewWriterSize(f, 1<<20)
 	if err := mpq.WriteTo(w, files); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := w.Flush(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	return f.Close()
@@ -307,7 +337,7 @@ func backup(src, dst string) error {
 		err = cerr
 	}
 	if err != nil {
-		os.Remove(dst)
+		_ = os.Remove(dst)
 	}
 	return err
 }

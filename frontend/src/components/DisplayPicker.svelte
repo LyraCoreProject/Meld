@@ -8,7 +8,8 @@
 	// object displays are read again after an object template is saved or made, since that changes
 	// which objects use each one (forgetObjectDisplays).
 	const displaysPromise: Record<DisplayKind, Promise<vmangos.DisplayEntry[]> | null> = { creature: null, object: null }
-	function loadDisplays(kind: DisplayKind): Promise<vmangos.DisplayEntry[]> {
+	/** Every display of a kind, with the templates using each, read once for the session. */
+	export function loadDisplays(kind: DisplayKind): Promise<vmangos.DisplayEntry[]> {
 		let p = displaysPromise[kind]
 		if (!p) {
 			p = (kind === 'object' ? ListObjectDisplays() : ListDisplays()).then((d) => d ?? [])
@@ -16,6 +17,10 @@
 			displaysPromise[kind] = p
 		}
 		return p
+	}
+	/** Drops the creature displays read, so the next picker reads them again (after a creature is saved or made). */
+	export function forgetCreatureDisplays() {
+		displaysPromise.creature = null
 	}
 	/** Drops the game object displays read, so the next picker reads them again. */
 	export function forgetObjectDisplays() {
@@ -25,6 +30,8 @@
 
 <script lang="ts">
 	import PaletteTile from './PaletteTile.svelte'
+	import VirtualGrid from './VirtualGrid.svelte'
+	import { gridCols, gridWindow, rowTop } from '../lib/ui/virtualGrid'
 	import { creatureTypeName, objectTypeName, spawnType } from '../lib/world/spawnInfo'
 
 	// A visual picker of creature displays, or (kind 'object', #230) of game object displays: rendered
@@ -56,8 +63,7 @@
 		.finally(() => (loading = false))
 
 	/** A display's category: the creature or object type of the templates using it, or Unused. */
-	const categoryOf = (d: vmangos.DisplayEntry) =>
-		objects ? (d.uses > 0 ? objectTypeName(d.type) : 'Unused') : d.type > 0 ? creatureTypeName(d.type) : d.uses > 0 ? 'Not specified' : 'Unused'
+	const categoryOf = (d: vmangos.DisplayEntry) => (objects ? (d.uses > 0 ? objectTypeName(d.type) : 'Unused') : d.type > 0 ? creatureTypeName(d.type) : d.uses > 0 ? 'Not specified' : 'Unused')
 	/** The model's file name without its folder or extension, such as Wolf or HumanMale. */
 	const fileOf = (d: vmangos.DisplayEntry) => d.model.slice(d.model.lastIndexOf('\\') + 1).replace(/\.(mdx|m2|wmo)$/i, '')
 	/**
@@ -118,13 +124,10 @@
 	let height = $state(0)
 	let scrollTop = $state(0)
 	let scroller: HTMLDivElement | undefined = $state()
-	const cols = $derived(Math.max(1, Math.floor((width - PAD + GAP) / (TILE + GAP))))
+	const cols = $derived(gridCols(width, TILE, GAP, PAD - GAP))
 	const tile = $derived(Math.min(MAX_TILE, Math.max(TILE, Math.floor((width - PAD - (cols - 1) * GAP) / cols))))
 	const rowH = $derived(tile + 22 + GAP)
-	const rows = $derived(Math.ceil(items.length / cols))
-	const first = $derived(Math.max(0, Math.floor(scrollTop / rowH) - 1))
-	const last = $derived(Math.min(rows, Math.ceil((scrollTop + height) / rowH) + 1))
-	const visible = $derived(items.slice(first * cols, last * cols))
+	const win = $derived(gridWindow(items.length, cols, rowH, scrollTop, height))
 	$effect(() => {
 		void items
 		scroller?.scrollTo(0, 0)
@@ -150,7 +153,7 @@
 		requestAnimationFrame(() => {
 			const i = items.indexOf(d)
 			if (i < 0 || !scroller) return
-			const top = Math.max(0, Math.floor(i / cols) * rowH - (height - rowH) / 2)
+			const top = Math.max(0, rowTop(i, cols, rowH) - (height - rowH) / 2)
 			scroller.scrollTo(0, top)
 			scrollTop = top
 		})
@@ -166,11 +169,7 @@
 </script>
 
 <div class="picker">
-	<input
-		type="search"
-		placeholder={objects ? 'Search: an object (Copper Vein), a model (chest, mine) or a display ID' : 'Search: a creature (Hogger), a model (wolf, kobold) or a display ID'}
-		bind:value={query}
-	/>
+	<input type="search" placeholder={objects ? 'Search: an object (Copper Vein), a model (chest, mine) or a display ID' : 'Search: a creature (Hogger), a model (wolf, kobold) or a display ID'} bind:value={query} />
 	<div class="row">
 		<select value={category} onchange={pickCategory} aria-label={objects ? 'Object type' : 'Creature type'}>
 			<option value="">All types ({all.length})</option>
@@ -199,22 +198,20 @@
 		{:else if !items.length}
 			<p class="dim">No display matches.</p>
 		{:else}
-			<div class="virtual" style:height="{rows * rowH}px">
-				<div class="grid" style:grid-template-columns="repeat({cols}, {tile}px)" style:gap="{GAP}px" style:transform="translateY({first * rowH}px)">
-					{#each visible as d (d.id)}
-						<PaletteTile
-							thumbKey={spawnType({ model: d.model, look: d.look })}
-							label={label(d)}
-							title={title(d)}
-							size={tile}
-							active={d.id === selected}
-							badge={String(d.id)}
-							onclick={() => pick(d)}
-							onhover={(on) => on && onhover?.(d)}
-						/>
-					{/each}
-				</div>
-			</div>
+			<VirtualGrid {items} {win} {cols} {tile} gap={GAP} {rowH} key={(d) => d.id}>
+				{#snippet cell(d: vmangos.DisplayEntry)}
+					<PaletteTile
+						thumbKey={spawnType({ model: d.model, look: d.look })}
+						label={label(d)}
+						title={title(d)}
+						size={tile}
+						active={d.id === selected}
+						badge={String(d.id)}
+						onclick={() => pick(d)}
+						onhover={(on) => on && onhover?.(d)}
+					/>
+				{/snippet}
+			</VirtualGrid>
 		{/if}
 	</div>
 </div>
@@ -239,18 +236,12 @@
 		min-width: 0;
 	}
 	.grid-wrap {
-		max-height: min(58vh, 640px);
+		max-height: min(calc(58 * var(--vh)), 640px);
 		flex: none;
 		overflow-y: auto;
 		border: 1px solid var(--border);
 		border-radius: 4px;
 		padding: 6px;
-	}
-	.virtual {
-		position: relative;
-	}
-	.grid {
-		display: grid;
 	}
 	.dim {
 		color: var(--text-dim);

@@ -1,4 +1,5 @@
 // Preferences › Interface size (#372): at 150 % the page is zoomed and still fits the window, the menus fit, the 3D canvas keeps one pixel per screen pixel, the pointer maps onto the canvas, the right-click menu opens under the pointer, and Ctrl+= / Ctrl+- / Ctrl+0 step the size.
+// touches: frontend/src/lib/ui/uiScale.ts, frontend/src/components/Dock.svelte, frontend/src/components/Viewport.svelte
 const { prefs, ui } = await P.state()
 const r = {}
 const near = (a, b, tol = 2) => Math.abs(a - b) <= tol
@@ -52,6 +53,17 @@ r.contextAtPointer = !!mr && near(mr.left, 300) && near(mr.top, 200)
 ui.contextMenu = null
 await P.frames(1)
 
+// Shares of the window (#580): the Log window's body and the dock's panel bodies stay within their share on screen, not 1.5x it.
+ui.dialog = 'log'
+await P.frames(3)
+const logEl = document.querySelector('.log')
+const lh = logEl?.getBoundingClientRect().height ?? 0
+r.logShare = !!logEl && lh <= innerHeight * 0.6 + 1
+ui.dialog = null
+await P.frames(2)
+const bodies = [...document.querySelectorAll('[data-ui="Dock"] .panel:not(.grow) .body')]
+r.dockShare = bodies.every((b) => b.getBoundingClientRect().height <= innerHeight * 0.4 + 1)
+
 // The shortcuts.
 const key = (k) => window.dispatchEvent(new KeyboardEvent('keydown', { key: k, ctrlKey: true, bubbles: true, cancelable: true }))
 document.activeElement?.blur?.()
@@ -66,5 +78,5 @@ await P.frames(2)
 r.unzoomed = root.style.zoom === ''
 
 prefs.uiScale = 1
-r.ok = r.zoomed && r.appFits && r.sharp && r.pointerMaps && r.menuFits && r.menuHasSize && r.contextAtPointer && r.ctrlPlus && r.ctrlMinus && r.ctrlZero && r.unzoomed
+r.ok = r.zoomed && r.appFits && r.sharp && r.pointerMaps && r.menuFits && r.menuHasSize && r.contextAtPointer && r.ctrlPlus && r.ctrlMinus && r.ctrlZero && r.unzoomed && r.logShare && r.dockShare
 return r

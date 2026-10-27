@@ -34,15 +34,7 @@ export function brushCenter(x: number, z: number, radius: number, cellSize: numb
  * see brushImage.ts). Returns touched rect. A `stroke` that records
  * heights saves the rect's blocks first, so what `fn` writes can be undone.
  */
-export function forEachVertex(
-	terrain: Terrain,
-	cx: number,
-	cz: number,
-	radius: number,
-	falloff: number,
-	fn: (index: number, w: number, x: number, z: number) => void,
-	stroke?: TerrainStroke | null,
-): Rect | null {
+export function forEachVertex(terrain: Terrain, cx: number, cz: number, radius: number, falloff: number, fn: (index: number, w: number, x: number, z: number) => void, stroke?: TerrainStroke | null): Rect | null {
 	const cs = terrain.cellSize
 	const x0 = Math.max(0, Math.floor((cx - radius) / cs))
 	const z0 = Math.max(0, Math.floor((cz - radius) / cs))
@@ -67,15 +59,7 @@ export function forEachVertex(
  * Iterate splat texels under a circular brush. Returns touched texel rect. A `stroke` that records the
  * paint or the mask saves the rect's chunks first, so what `fn` writes can be undone.
  */
-export function forEachTexel(
-	terrain: Terrain,
-	cx: number,
-	cz: number,
-	radius: number,
-	falloff: number,
-	fn: (pixel: number, w: number) => void,
-	stroke?: TerrainStroke | null,
-): Rect | null {
+export function forEachTexel(terrain: Terrain, cx: number, cz: number, radius: number, falloff: number, fn: (pixel: number, w: number) => void, stroke?: TerrainStroke | null): Rect | null {
 	const R = terrain.splatRes
 	const ts = terrain.worldSize / R
 	const x0 = Math.max(0, Math.floor((cx - radius) / ts))
@@ -144,13 +128,20 @@ export class TerrainStroke {
 	private sRect: Rect | null = null
 	private mRect: Rect | null = null
 	private holesRect: Rect | null = null
+	/** Whether `finish` frees the slots the stroke's chunks no longer use (`settleSlots`). */
+	private settle: boolean
 
+	/**
+	 * `settle: false` keeps a chunk's empty texture layers: a script's `chunk:add_texture` adds a layer
+	 * with no weight yet, for a later stroke to paint (#760).
+	 */
 	constructor(
 		private terrain: Terrain,
 		private label: string,
-		opts: { heights?: boolean; splat?: boolean; mask?: boolean; holes?: boolean },
+		opts: { heights?: boolean; splat?: boolean; mask?: boolean; holes?: boolean; settle?: boolean },
 		private onHeightsChanged?: (r: Rect) => void,
 	) {
+		this.settle = opts.settle ?? true
 		const R = terrain.splatRes
 		if (opts.heights) this.hBefore = new BlockSnapshot(terrain.heights, terrain.verts, terrain.verts, 1, SNAPSHOT_BLOCK)
 		if (opts.splat) {
@@ -247,6 +238,23 @@ export class TerrainStroke {
 		// Each layer keeps only the cells that differ, block by block (#444): a whole-mask step that
 		// changes a corner of the mask keeps that corner, not two copies of the mask.
 		let bytes = 0
+		// A tile the map leaves out of its square keeps its ground (#737): put back what the stroke wrote there
+		// (a vertex shared with a present tile stays), so the diff holds nothing of it and undo keeps to the stroke.
+		if (t.tileMask) {
+			if (this.hBefore && this.hRect) this.hBefore.restore(this.hRect, (x, z) => t.vertexOff(x, z))
+			if (this.wBefore && this.sRect) this.wBefore.restore(this.sRect, (x, z) => t.texelOff(x, z))
+			if (this.slotsBefore) {
+				const side = t.paintChunksPerSide
+				const per = t.size / side
+				for (let c = 0; c < side * side; c++) {
+					if (!t.tileOff(((c % side) * per) | 0, Math.floor(c / side) * per)) continue
+					for (let k = 0; k < SLOTS; k++) t.chunkSlots[c * SLOTS + k] = this.slotsBefore[c * SLOTS + k]
+				}
+			}
+			if (this.wBefore && this.sRect) t.markSplatDirty(this.sRect)
+			if (this.mBefore && this.mRect) this.mBefore.restore(this.mRect, (x, z) => t.texelOff(x, z))
+			if (this.holesBefore && this.holesRect) this.holesBefore.restore(this.holesRect, (x, z) => t.tileOff(x, z))
+		}
 		if (this.hBefore && this.hRect) {
 			const r = this.hRect
 			const patch = this.hBefore.diff(r)
@@ -261,7 +269,7 @@ export class TerrainStroke {
 			})
 		}
 		if (this.wBefore && this.slotsBefore) {
-			this.settleSlots()
+			if (this.settle) this.settleSlots()
 			const slotsChanged = t.chunkSlots.some((v, i) => v !== this.slotsBefore![i])
 			const slotsBefore = slotsChanged ? this.slotsBefore : null
 			const slotsAfter = slotsChanged ? t.chunkSlots.slice() : null

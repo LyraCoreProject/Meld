@@ -1,13 +1,11 @@
 // Run with: bun test tests/objectLayer.test.ts
 // The attachment tree is read from the kids index, not by walking every object (#512).
+import './runes.ts'
 import { test } from 'bun:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import type { Terrain } from '../src/lib/terrain/Terrain.ts'
 
-// The layer's imports reach the editor's state, whose runes need Svelte's compiler: plain values do here.
-const g = globalThis as Record<string, unknown>
-g.$state = <T>(v: T) => v
 const { ObjectLayer } = await import('../src/lib/world/ObjectLayer.ts')
 const selection = await import('../src/lib/state/selection.ts')
 
@@ -186,4 +184,40 @@ test('groupMembers follows add, setGroup, a snapshot written back with touch, re
 	L.clear()
 	assert.equal(L.groupMembers(g).size, 0)
 	assert.equal(L.groupMembers(9).size, 0)
+})
+
+test('objects read without ids (a map saved before they had them, #534) are each given a new one', () => {
+	const L = new ObjectLayer(terrain)
+	const old = { type: TYPE, x: 0, z: 0, yOff: 0, rotY: 0, scale: 1, id: 0 }
+	const placed = [L.add({ ...old }), L.add({ ...old }), L.add({ ...old })]
+	assert.deepEqual(
+		placed.map((o) => o.id),
+		[1, 2, 3],
+	)
+	assert.equal(L.objects.size, 3)
+	// The next object placed after them takes the id after theirs.
+	assert.equal(L.add({ ...old, id: undefined }).id, 4)
+})
+
+test('dropEmptyBatches takes away the batches no object uses any more, and only those (#15)', () => {
+	const L = new ObjectLayer(terrain)
+	const OTHER = 'helper:cube:1'
+	const at = (type: string) => ({ type, x: 0, z: 0, yOff: 0, rotY: 0, scale: 1 })
+	const a = L.add(at(TYPE))
+	const b = L.add(at(OTHER))
+	assert.equal(L.group.children.length, 2)
+	assert.deepEqual([...L.dropEmptyBatches(new Set())], [])
+	L.remove(b.id)
+	// The empty batch is still named until it is dropped.
+	assert.ok(L.modelTypes(new Set()).has(OTHER))
+	assert.deepEqual([...L.dropEmptyBatches(new Set())], [OTHER])
+	assert.deepEqual([...L.modelTypes(new Set())], [TYPE])
+	assert.equal(L.group.children.length, 1)
+	assert.deepEqual([...L.dropEmptyBatches(new Set())], [])
+	// Placed again, the type gets a batch again and is drawn.
+	L.add(at(OTHER))
+	L.update()
+	assert.equal(L.group.children.length, 2)
+	assert.ok(L.modelTypes(new Set()).has(OTHER))
+	assert.ok(L.objects.has(a.id))
 })

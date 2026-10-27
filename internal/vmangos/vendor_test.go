@@ -1,10 +1,10 @@
 package vmangos
 
 import (
-	"os"
 	"strings"
 	"testing"
 
+	"Meld/internal/testclient"
 	"Meld/internal/wow"
 )
 
@@ -38,14 +38,30 @@ func TestParseVendorItems(t *testing.T) {
 	}
 }
 
-func TestParseItemRow(t *testing.T) {
-	names := []string{"entry", "name", "description", "armor"}
-	got, err := parseItemRow(names, []byte("2361\tBattleworn Hammer\t\t0\n"), 2361)
-	if err != nil || got["name"] != "Battleworn Hammer" || got["description"] != "" || got["armor"] != "0" {
-		t.Fatalf("got %v, %v", got, err)
+func TestReadKeyedRow(t *testing.T) {
+	old := runSQL
+	defer func() { runSQL = old }()
+	var query string
+	reply := "3\tBattleworn Hammer\t\tNULL\tNULL\n"
+	runSQL = func(_ worldDB, sql string) ([]byte, error) {
+		query = sql
+		return []byte(reply), nil
 	}
-	if _, err := parseItemRow(names, []byte(""), 9); err == nil {
-		t.Fatal("no row should be an error")
+	cols := []TemplateColumn{{Name: "name"}, {Name: "description"}, {Name: "armor"}, {Name: "spellid_1", Nullable: true}}
+	key, got, err := readKeyedRow(worldDB{}, itemTable, "patch", "", cols, "item", 2361)
+	if err != nil || key != 3 || got["name"] != "Battleworn Hammer" || got["description"] != "" || got["armor"] != "NULL" || got["spellid_1"] != "" {
+		t.Fatalf("got %d %v, %v", key, got, err)
+	}
+	if query != "SELECT `patch`, `name`, `description`, `armor`, `spellid_1` FROM `item_template` WHERE `entry` = 2361 ORDER BY `patch` DESC LIMIT 1" {
+		t.Fatalf("query %q", query)
+	}
+	if _, _, err := readKeyedRow(worldDB{}, "spell_template", "build", "`build` <= 5875", cols, "spell", 133); err != nil ||
+		query != "SELECT `build`, `name`, `description`, `armor`, `spellid_1` FROM `spell_template` WHERE `entry` = 133 AND `build` <= 5875 ORDER BY `build` DESC LIMIT 1" {
+		t.Fatalf("spell query %q, %v", query, err)
+	}
+	reply = ""
+	if _, _, err := readKeyedRow(worldDB{}, itemTable, "patch", "", cols, "item", 9); err == nil || err.Error() != "the world database has no item 9" {
+		t.Fatalf("no row: %v", err)
 	}
 }
 
@@ -53,10 +69,7 @@ func TestParseItemRow(t *testing.T) {
 // the Battleworn Hammer's display (8690) names an icon, and a display the client lacks is left out.
 // It needs WOW_DIR set.
 func TestItemIconsFromClient(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -74,10 +87,7 @@ func TestItemIconsFromClient(t *testing.T) {
 // TestSpellTextsFromClient checks Spell.dbc's field layout against the client's own text: spell 433
 // (the Tough Hunk of Bread's) restores health over its duration. It needs WOW_DIR set.
 func TestSpellTextsFromClient(t *testing.T) {
-	dir := os.Getenv("WOW_DIR")
-	if dir == "" {
-		t.Skip("WOW_DIR not set")
-	}
+	dir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -90,4 +100,54 @@ func TestSpellTextsFromClient(t *testing.T) {
 	if len(texts) < 1 || strings.Contains(texts[433], "$") || !strings.Contains(texts[433], "Restores 61 health over 18 sec") {
 		t.Fatalf("texts %v", texts)
 	}
+}
+
+// TestItemOrder checks the Item Editor's sort keys: each maps to its column, descending adds
+// DESC to the key only, ties break by name and entry, and an unknown key falls back to the name.
+func TestItemOrder(t *testing.T) {
+	for _, c := range []struct {
+		sort string
+		desc bool
+		want string
+	}{
+		{"name", false, "i.name, i.entry"},
+		{"name", true, "i.name DESC, i.entry"},
+		{"entry", true, "i.entry DESC"},
+		{"quality", true, "i.quality DESC, i.name, i.entry"},
+		{"itemLevel", false, "i.item_level, i.name, i.entry"},
+		{"requiredLevel", true, "i.required_level DESC, i.name, i.entry"},
+		{"1; DROP TABLE item_template", false, "i.name, i.entry"},
+	} {
+		if got := itemOrder(c.sort, c.desc); got != c.want {
+			t.Errorf("itemOrder(%q, %v) = %q, want %q", c.sort, c.desc, got, c.want)
+		}
+	}
+}
+
+// TestSearchItemsSortedFromDatabase checks the order of a broad search in the world database: by
+// item level descending the levels never rise, and the first is at least the name order's highest.
+func TestSearchItemsSortedFromDatabase(t *testing.T) {
+	server := testclient.ServerDir(t)
+	byLevel, err := SearchItemsSorted(server, "sword", "itemLevel", true, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName, err := SearchItems(server, "sword", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byLevel) < 10 || len(byName) < 10 {
+		t.Fatalf("%d and %d swords", len(byLevel), len(byName))
+	}
+	for i := 1; i < len(byLevel); i++ {
+		if byLevel[i].ItemLevel > byLevel[i-1].ItemLevel {
+			t.Fatalf("item %d (level %d) after %d (level %d)", byLevel[i].Entry, byLevel[i].ItemLevel, byLevel[i-1].Entry, byLevel[i-1].ItemLevel)
+		}
+	}
+	for _, r := range byName {
+		if r.ItemLevel > byLevel[0].ItemLevel {
+			t.Fatalf("%s (level %d) is above the first by level, %s (%d)", r.Name, r.ItemLevel, byLevel[0].Name, byLevel[0].ItemLevel)
+		}
+	}
+	t.Logf("highest sword: %s, level %d", byLevel[0].Name, byLevel[0].ItemLevel)
 }

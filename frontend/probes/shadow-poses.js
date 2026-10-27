@@ -4,6 +4,7 @@
 // than the whole map. With the clock held (so the poses hold), the view drawn that way matches the view
 // after a full redraw, and on the creatures map differs once the moving pass is left out (the creatures'
 // shadows are then missing), so the comparison sees them.
+// touches: frontend/src/lib/engine/posedShadows.ts, frontend/src/lib/engine/shadowCascades.ts, frontend/src/lib/world/shadowCasters.ts
 const e = P.e
 const { prefs } = await P.state()
 const was = prefs.animations
@@ -14,7 +15,7 @@ let forceFull = false
 const mark = e.markShadows.bind(e)
 
 const run = async (kind) => {
-	await P.benchMap(kind)
+	await P.loadBenchMap(kind)
 	const r = { kind }
 	await P.frames(4)
 	fulls = 0

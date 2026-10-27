@@ -1,6 +1,7 @@
 // A WMO's liquids (#287): Blackrock Depths' lava (its groups' MLIQ) is drawn, instanced with the dungeon, as the client's magma: the frame's orange, opaque, over the lava pools, and gone with the liquids' material hidden.
+// touches: frontend/src/lib/water/liquidMaterial.ts, frontend/src/lib/world/ObjectLayer.ts, internal/wow/wmoliquid.go
 const { editor } = await P.state()
-const { openWowBuilding } = await P.app('/src/lib/io/mapio.ts')
+const { openWowBuilding } = await P.app('/src/lib/io/region.ts')
 const { wmoLiquidMaterial } = await P.app('/src/lib/water/liquidMaterial.ts')
 openWowBuilding(P.e, 'BlackrockDepths')
 await P.until(() => editor.regionMap === 'BlackrockDepths' || null, 120000, "Blackrock Depths' tab")
@@ -12,7 +13,7 @@ const b = e.objects.batches.get(key())
 const g = b.liquid.geometry
 // A lava vertex in the world, through the dungeon's placement.
 const pos = g.attributes.position.array
-const m = b.matrices
+const m = b.rows.matrices
 const idx = g.index.array
 const vi = idx[Math.floor(idx.length / 6) * 3]
 const x = pos[vi * 3]
@@ -38,8 +39,7 @@ const d = P.diff(a, bare, undefined, below)
 // The mean colour below the horizon: the lava's orange.
 const { x0, x1, y0, y1 } = P.rect(a, below)
 const sum = [0, 0, 0]
-for (let yy = y0; yy < y1; yy++)
-	for (let xx = x0; xx < x1; xx++) for (let c = 0; c < 3; c++) sum[c] += a.px[(yy * a.w + xx) * 4 + c]
+for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) for (let c = 0; c < 3; c++) sum[c] += a.px[(yy * a.w + xx) * 4 + c]
 const n = (x1 - x0) * (y1 - y0)
 const rgb = sum.map((s) => Math.round(s / n))
 const out = {

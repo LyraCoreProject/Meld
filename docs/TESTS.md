@@ -36,15 +36,42 @@ copies of `three.module.js` and `three.core.js`, a page builds the material, ren
 
 ## Unit and integration tests
 
-- `make test` runs `go test ./internal/...`, `go test .` (the root package, only when `frontend/dist` exists, since it is `//go:embed`ed; otherwise it prints a skip line) and the frontend unit tests (`bun test ./tests`).
+- `make test` runs `go test -short ./internal/...`, `go test -short .` (the root package, only when `frontend/dist` exists, since it is `//go:embed`ed; otherwise it prints a skip line) and the frontend unit tests (`bun test ./tests`).
+- `make test-full` is the same without `-short`: it also runs the five heavy client scans (`TestSpawnModelsLoad`, `TestServerNavTiles`, `TestSpellColumnsMatchClient`, `TestSpellStartersLive`, `TestClientAnimatedLayersKept`), which skip under `-short` with "heavy client scan; run make test-full". Measured on the owner's machine (#401): the gated ones add about 7 s (`make test` 30 s, `make test-full` 37 s). The loop's coordinator runs it once a run. Trap: `-short` hides any heavy test a worker adds, so a test over about 5 s belongs behind `if testing.Short() { t.Skip(...) }`.
+- `make fuzz` (#499) mutates the client parsers' fuzzers for 10 s each: `FuzzParseM2`, `FuzzParseWMORoot`, `FuzzParseWMOGroup`, `FuzzParseMLIQ`, `FuzzDecodeBLP`, `FuzzDXTOf` (`internal/wow/fuzz_test.go`), `FuzzParseTerrain` and `FuzzParsePlacements` (`internal/adt/fuzz_test.go`). Each asserts no panic; their seeds are the synthetic buffers the other tests build and run in `make test` as plain tests. A crash is written to `testdata/fuzz/<name>/` beside the test: fix the parser, keep the file as a regression case (it holds only the mutated bytes, no Blizzard data). Run one with `go test ./internal/wow -run '^$' -fuzz '^FuzzParseM2$' -fuzztime=30s`. Trap: Go allows one `-fuzz` target per run, hence the loop in the target; `ParseM2Look` with a `Look` is not fuzzed (the nil-look path only).
 - `make check` runs go vet (`./internal/...`, and `.` when `frontend/dist` exists) and svelte-check/tsc. svelte-check runs twice: on `tsconfig.app.json` (`src`) and on `tsconfig.tests.json` (`frontend/tests`, which Bun runs with types erased, so a fixture that drifts from its type fails `make check`, not `make test`).
+- `make check` also runs `make lint`: golangci-lint with the committed `.golangci.yml` (errcheck, govet, ineffassign, staticcheck, unused; tests are left out of errcheck). Discard a best-effort error as `_ = f()`. It skips with a note when golangci-lint is not installed (README), and lints only the files for this OS, so a Linux-only file is checked only on Linux.
+- `make check` also runs `make notices-check` (`frontend/scripts/notices.mjs --check`): it fails when a bundled npm package or linked Go module comes under a licence outside the permissive allow list, or when `THIRD_PARTY_NOTICES.md` is out of date. After `bun add`, a Go bump or a lockfile change run `make notices` and commit the file. It needs `node_modules` and the Go module cache.
 - `tests/history.test.ts` covers the undo stack (`state/historyCore.ts`: push, the step limit and
   the byte budget, replaceTop, goTo, clear) through a plain sink; `state/history.ts` only wires that sink to the
-  runes state. Trap: a test can't import a `.svelte.ts` runes module, since Bun doesn't run the Svelte compiler on it.
+  runes state. Trap: Bun doesn't run the Svelte compiler, so a test that imports `editor.svelte.ts`, or any module that
+  reaches it (the tools, `ObjectLayer`, `Terrain`'s palette), puts `import './runes.ts'` first: it makes `$state` a
+  plain value and the module loads with its real defaults. Don't `mock.module` the editor or `wow/api.ts` without
+  the rest of the module (`...await import(...)`, as `releaseAsset.test.ts` does): every file runs in one process and
+  a module mock lasts the whole run, so a later file that needs another export fails only in `make test`, not alone.
+- `tests/terrainRaycast.test.ts` runs the terrain ray-march (`rayMarchGround`) on a flat stand-in ground with a hole: straight and slanted rays through the hole, a miss, `solid` (#528).
+- `tests/heightField.test.ts` runs the bilinear `heightAt` (shared by `Terrain` and the shadow bake) and the ray-march over a cliff: a slanted ray onto the top, a low ray into the face, a ray from outside the box, one to the sky (#536).
 - `tests/terrainStroke.test.ts` checks that a `TerrainStroke` keeps only the cells that changed (a whole-mask
   step that sets a corner holds that corner, `Command.bytes`) and that its undo and redo restore them, on a
-  fake terrain; `tests/blockSnapshot.test.ts` covers `BlockSnapshot.diff` and `GridPatch` underneath (#444).
-- WoW client integration tests: `WOW_DIR=/path/to/client go test ./internal/wow/ -v`.
+  fake terrain, and that every layer (heights, paint, mask, holes) round-trips exactly, `settleSlots` restores whole
+  chunks, a `touch*` without `reserve*` still records and warns, and `ShadowStroke` goes back to no shadows (#462);
+  `tests/blockSnapshot.test.ts` covers `BlockSnapshot.diff` and `GridPatch` underneath (#444).
+- The client and server tests (about 95 in `internal/adt`, `internal/wow` and `internal/vmangos`) find
+  their folders through `internal/testclient` (#400): `testclient.DataDir(t)` is `WOW_DIR`, else
+  `config.json`'s `wowPath`; `testclient.ServerDir(t)` is `VMANGOS_DIR`, else `vmangosPath`, and skips
+  when the world database in the server's `mangosd.conf` does not answer (a TCP connect), so a stopped
+  mariadb skips the database tests instead of failing them; `ServerFolder(t)` is the same without the
+  database check, for tests that read the server's files. Each skips the test when it finds nothing, so
+  a machine without Meld set up skips them all, and on the owner's machine they run in a plain
+  `make test`: `go test ./internal/...` went from 3 s and 98 skips to 29 s and 4 skips (the three
+  database-writing tests below, and `TestIronforgePatchIsBackedUp`, which needs a particular patch-3).
+  A set variable still wins (`WOW_DIR=/path/to/client go test ./internal/wow/ -v` for another client).
+  To see what a machine without a client runs (CI), leave `WOW_DIR` unset and point the config folder at an empty
+  one: `APPDATA="$(cygpath -w $(mktemp -d))" go test ./internal/adt/ -v` in Git Bash (`XDG_CONFIG_HOME` on Linux).
+  A new client test calls the locator rather than `os.Getenv`; a test that writes the world database
+  (`TestCreatedGUIDLive`, `TestSpellStartersLive`, `TestSpellScriptsLive`) keeps the explicit
+  `os.Getenv("VMANGOS_DIR")`, and the guard below enforces it.
+- Go tests never write the real client or the live world database (#402). `TestNoTestWritesRealClient` (`guard_test.go`, root package) parses every `internal/**/*_test.go` and fails when `InstallPatch`, `InstallWithPending`, `AddPending` or `ExportMap` (its second argument) gets a folder derived from `os.Getenv("WOW_DIR")` (through `ResolveDataDir`, `filepath.Join`, ...) instead of `t.TempDir()` or a hard-linked copy (`clientfolder_test.go`); `AddPending` is allowed where the test points `pendingRoot` at a temp folder. `testclient.DataDir` counts as the real client too. It fails on `config.Load` in any test file but the config package's (the locator, `internal/testclient`, is not a test file), and on a `testclient.Server*` call in the tests listed in `guardDBWriters`, which write the world database and so must name it through `VMANGOS_DIR` (`TestCreatedGUIDLive` inserts a row that must fail on its key; the database is MyISAM, so a rollback undoes nothing). A new test that writes the database goes on that list. Limit: a real folder passed on to a helper that writes is not followed. `TestGuardCatchesRealClientWrite` checks the guard on scratch sources.
 - `TestMeshEncodeLayout` and `TestCollisionEncodeLayout` (`internal/wow/encode_test.go`) check the
   mesh and collision bodies against the `binary.Write` layout they replaced and that the buffer is
   sized exactly (#503). `go test ./internal/wow/ -run X -bench MeshEncode -benchmem` gives the bytes
@@ -54,7 +81,7 @@ copies of `three.module.js` and `three.core.js`, a page builds the material, ren
   handler panic (`RecoverPanics`), with a 500. A request needs `c.set` non-nil (`&mpq.Set{}` in the
   package's tests) before the overlay (`SetOverlay`) is asked. Trap: the panic only kills the app in
   the desktop build; `wails dev`'s net/http server recovers it, so the dev page never shows the crash.
-- The same `WOW_DIR` runs the client checks in `internal/vmangos` (region round trips, the chunk
+- The same locator runs the client checks in `internal/vmangos` (region round trips, the chunk
   header write `TestRegionHeadersWritten`, `TestReadAreasFromClient`). On the owner's machine the
   client is the `wowPath` in `%APPDATA%/Meld/config.json`. Trap: a region save itself changes chunk
   flags (0x8000 on some chunks), so compare a write against the same save without your change, not
@@ -66,8 +93,11 @@ copies of `three.module.js` and `three.core.js`, a page builds the material, ren
 - `TestClientWDL` (WOW_DIR) is the check for the WDL write: Azeroth.wdl parsed and rebuilt must be
   byte-identical, and the outer horizon heights sampled from a client tile must equal the client's. Trap:
   Northshire (32,48) is a few yards off the client's WDL (the tile was edited after Blizzard built it), so
-  don't use it for an exact comparison; Westfall (31,49) is exact. `BuildRegion` returns the WDL after the
-  tiles, so a test that walks the files as tiles takes `files[:size*size]`.
+  don't use it for an exact comparison; Westfall (31,49) is exact. `BuildRegion` returns the block's tiles
+  first and the WDL last, so a test that walks the block's tiles takes `files[:size*size]` and the WDL
+  `files[len(files)-1]`. Between them may sit tiles outside the block that list a model an earlier
+  compile moved (#647), so their number depends on the client's `patch-3.MPQ`: a WOW_DIR test must hold
+  with and without them (`TestRegionNoEditRoundTrip`, `TestClientRegionAddedModelIDs`, #667).
 - `TestClientAnimatedLayersKept` (WOW_DIR) finds an animated layer in the client (Burning Steppes lava,
   tile 33_44) and rewrites its chunk as a region save does: the layer must keep its MCLY look flags. It is
   the check that a paint rewrite doesn't drop the client's animation or overbright.
@@ -79,7 +109,40 @@ copies of `three.module.js` and `three.core.js`, a page builds the material, ren
   client walks as a cycle in file order, so `WriteLights` passes a band whose times are unchanged through,
   writing only its changed values, instead of checking its order (#275), and the Lights dialog sorts a
   band only when a key's time changes, so recolouring a key of 499's band 9 keeps its order (#276; the
-  test recolours one).
+  test recolours one). `TestWriteLightsSynthetic` (no client needed, #403) checks the same on tables it
+  builds (`lightTestTables`: 0xcccccccc slots, a band out of time order): an unchanged write is
+  byte-identical, a recolour changes only that value's four bytes, new times keep the unused slots, and
+  `LightFiles` names only the changed tables by their `DBFilesClient\` paths (a wrong path writes a file
+  the client ignores, with no error).
+- The adt tests that read a whole tile (`TestTileIntegration`, `TestWriteHeightsIntegration`, `TestNormalsMatchFile` and the
+  `TestRewrite*` ones that took the client's tile) run through `eachTile` (`internal/adt/rewrite_test.go`, #497): a
+  `synthetic` subtest on `syntheticTile`, a 32_48 tile made by `BuildTile` with every piece a client tile carries (one to
+  four layers with alpha, two M2 and a WMO, river, magma and sea, shadows, holes, impassable chunks, area IDs, and MCSE
+  records spliced in raw), and a `client` subtest on Azeroth 32_48 that skips without a client. So they guard the tile
+  writer on CI and any machine; `TestSyntheticTileHasEveryPiece` checks the fixture still has every piece. Traps: a
+  piece Meld never writes (MCSE) is spliced in with MCIN moved by hand, not through `Rewrite`, or a writer that drops
+  it would hand the tests a fixture that already lost it; and the synthetic normals check is the writer against itself
+  (stored normals match `normalAt` after an edit), so the comparison with Blizzard's normals stays client-only.
+- `TestAddGroundEffectSynthetic` (no client needed, #403) is `TestClientAddGroundEffect`'s client-free
+  twin: the new GroundEffectTexture row names its models by GroundEffectDoodad's internal IDs (field 1;
+  0 is a model, an empty slot is 0xFFFFFFFF), the old rows and the string block stay byte-identical.
+  `AddGroundEffect` writes only GroundEffectTexture; the doodad table is read, never written.
+- Normals (#492, #668): `TestNormalsMatchFile`'s `client` subtest (WOW_DIR) recomputes the normals of steep and gentle
+  chunks inside Azeroth_32_48 and Azeroth_31_49, which must match the file's to the byte, and the
+  south, west and east borders of Azeroth_30_40 with the ring from its neighbours, which must stay
+  within a twentieth of their bytes and beat both one-sided normals and a ring without the inner
+  samples across. Traps: some of the client's chunks have normals that don't follow their heights at
+  all (Azeroth_32_48 chunk 0, the first chunk row and column of 31_49, 30_40's north border, whose
+  heights differ from the north tile's in 22 shared samples), so pick chunks and sides that were
+  checked; and the client truncates each part (`int8(v*127)`), so rounding puts half the bytes 1 off.
+  `TestRegionNormalsReachTheTilesBeside` (no client needed) sculpts the column one in from a block's
+  east edge and checks the client tiles east of it get their west border normals redone to match,
+  heights and other chunks kept, an unedited save and the same edit from the patch writing neither (#666).
+  `TestBuildTileNormalsMeetAcrossTheBorder`, `TestWriteHeightsRefreshesTheBorderWhenTheRingMoves`
+  (`internal/adt`), `TestRegionNormalsMeetAcrossTiles` and `TestRegionNormalsReadTheInnerSamplesAcrossTiles`
+  (`internal/vmangos`, made-up maps in a temp MPQ; the second gives the client tiles inner samples off
+  their corners' mean, which the first's don't have) need no client. Trap in a made-up map: give a client tile a ring side only toward a tile the map
+  has, or the block's corner samples differ from it for no fault of the export.
 - `TestRegionHolesRoundTrip` (WOW_DIR) sends a Westfall block's own holes back as the editor does and
   checks every chunk keeps the client's hole bits (4 chunks there have holes); it is the check for the
   hole export's block mapping. Seeing a cut cave mouth in game is still a manual check.
@@ -96,12 +159,43 @@ copies of `three.module.js` and `three.core.js`, a page builds the material, ren
   delete the row yourself afterwards. A template whose `unit_class` has no `creature_classlevelstats`
   rows (only classes 1, 2 and 8 have them) stops mangosd at startup (#112).
 
+## Looking into files without the app (`meldtool`)
+
+`cmd/meldtool` (#611) reads the files Meld reads and writes, from the repository root with
+`go run ./cmd/meldtool <command>`, instead of a scratch Go test or the dev page. It only reads (`mpq cat
+-o` writes the file you name, nothing else). A tile argument is a file on disk or, when no such file
+exists, an archive path read from the client: `--client` (the client folder, its Data folder or one
+`.MPQ`), else `config.json`'s `wowPath`, so on the owner's machine a bare `World\Maps\...` path works.
+Its own tests (`cmd/meldtool/meldtool_test.go`, synthetic tiles and archives) run in `make test`.
+
+- `wmap info <file.wmap>`: the version, size, palette, objects by kind (`m2`, `wmo`, `helper`), hole
+  cells, liquid layers by type, chunks by zone, impassable chunks, no-effect cells, shadows, region and
+  the `*Unknown` flags, as JSON. A scene's saved copy is in `<user cache>/Meld/scenes`.
+- `adt dump [--chunk x,y] [--placements] <tile>`: each chunk's flags, area, holes and no-effect bytes
+  (a byte a cell row), height range, layers (texture, flags, ground effect, alpha coverage), liquids
+  and shadowed texels, as JSON; `--chunk` gives one chunk with its 145 heights, `--placements` lists
+  the models. `--big-alpha` for a tile on disk from a map whose WDT has 8-bit alpha (a client tile reads
+  its WDT).
+- `adt diff <a> <b>`: a line per difference, chunk by chunk (flags, area, holes, heights past `--eps`,
+  layers, alpha maps, liquids, shadows) and then placements by UID (past `--place-eps`, 0.01: a float32
+  at 17000 yards is only good to 0.002); exits 1 when they differ. `--client-b` reads b from elsewhere,
+  so `adt diff --client <Data>/terrain.MPQ --client-b <Data>/patch-3.MPQ <path> <path>` shows what a
+  patch changed. Trap, as above: a region save itself sets 0x8000 on some chunks, so diff a write
+  against the same save without your change (`mpq cat -o` both), not against the client's tile.
+- `mpq ls [filter]` and `mpq cat [-o file] <path>`: the listed files (filter: a substring, any case,
+  `/` or `\`), and one file's bytes from the topmost archive that has it (or from the one `--client`
+  archive).
+- `bindings [--json]`: the bound methods (`func (a *App) X` in the root package, the files this OS
+  builds) with their signatures and file:line, read from the sources, no build or wails needed.
+
 ## Rendering and UI in the live app (Claude in Chrome)
 
 Checks: anything visual (shaders, shadows, lighting, models, UI) against the real client assets.
 
 - `make dev` (`wails dev`) serves the app at http://localhost:34115. The page exposes
   `window.__engine` (the Engine), `window.__loadScene(text)` and `window.__sceneText()`.
+  `__loadScene` checks the whole line first (`parseScene`, tests/scene.test.ts): a scene must be complete
+  (`v`, `map`, `view`, `prefs`, `tool`, `selectedIds`, `selected`, `viewport`), or it throws naming the field and changes nothing.
 - From a script (Python especially), call the dev server at `http://127.0.0.1:34115`, not
   `localhost`: Python on Windows tries `::1` first and spends seconds on each request (a survey of
   621 tilesets hit a 10-minute timeout that `127.0.0.1` finished in under a minute, #227). curl,
@@ -166,7 +260,7 @@ change, and write a new probe instead of an ad-hoc CDP script when the check is 
   detached (log: `meld-dev.log` in the temp folder) and waits up to 10 minutes, a few minutes in
   practice. It stays up for the next run; with `MELD_URL` set it never starts one. Keep it running across items.
 - `cd frontend && bun run probe <name...>` runs those probes, `bun run probe --all` (or `make probe`)
-  runs every one but the benchmarks (`bench`, `perf-*`, about 8 of the 31 minutes; name them, or `make probe-perf`, #390), which keeps a whole run under the agent harness's 30-minute task limit (a foreground command gets 10, so run it in the background and read its log, one line a probe, rather than piping it through `tail`), `bun run probe --list` names them, `--shot <dir>` saves a screenshot each (of a frame the runner draws after the probe, since the loop is stopped) and
+  runs every one but the benchmarks (`bench`, `perf-*`, about 8 of the 31 minutes; name them, or `make probe-perf`, #390), which keeps a whole run under the agent harness's 30-minute task limit (a foreground command gets 10, so run it in the background and read its log, one line a probe, rather than piping it through `tail`), `bun run probe --list` names them, `--touching <git range>` runs the ones a change touches (below), `--shot <dir>` saves a screenshot each (of a frame the runner draws after the probe, since the loop is stopped) and
   `--profile` adds the probe's 12 functions with the most CPU time (self / total ms; it found #233's
   stalls in one run), each followed by `<=` and its heaviest caller chain up to the first Meld `src/` frame, with that
   chain's share of its self time (so three's `intersectTriangle` shows which Meld code raycast). `PROFILE_TOP=<n>`
@@ -183,8 +277,22 @@ change, and write a new probe instead of an ad-hoc CDP script when the check is 
   terminal** on every page load (stack in `/wails/ipc.js`) is Wails v2.16.0's, not Meld's (#335): its
   injected "disconnected" overlay is compiled with Svelte 5 but mounted with the old `new Component()`
   call (reported as wailsapp/wails#6317). It is harmless, dev-only, and the probe runner already skips it; don't chase it.
+- **The smoke set** (#398): `make probe-smoke` (or `cd frontend && bun run probe --smoke`) runs the probes whose leading comment block holds a `// tier: smoke` line (next to `touches`), so the list lives in the probes: `attach-follow`, `compile-launch`, `compile-spawns`, `dialog-focus`, `hide-panels`, `hotkeys`, `menu-keys`, `path-road`, `shadow-redraw`, `shortcut-table`, `terrain-cell-tex`, `tool-hints`, `undo-sculpt`. They are fast (a flat map or a dialog, no benchmark scene), deterministic (no pixel diffs or timing thresholds) and guard shared code (`App.svelte`, `Modal`, the menu bar, `History`, `ObjectLayer` attachments, the compile state, the terrain shader's sampler budget, shadow redraws). About 100 s in all (81 s without `shadow-redraw`, 19 s). Add a probe only if it is under about 10 s and loads no scene; `--smoke` combines with names and `--touching`.
+- **The probes for a change** (#397): every probe's leading comment block holds a `// touches:` line,
+  the source files it checks as repo-root paths or globs, comma-separated (`frontend/src/lib/world/nav/*`,
+  `internal/vmangos/spawnedit.go`; `*` stays in one folder, `**` crosses folders, a path ending in `/` takes
+  what is under it). `cd frontend && bun run probe --touching <git range>` (e.g. `HEAD~3..HEAD`, or
+  `origin/main` for the working tree's change against it) runs every probe, but the benchmarks, whose
+  globs match a file `git diff --name-only <range>` lists; add `--list` to only name them. A probe also
+  touches its own file, a change to `probes/lib.js` picks every probe, and a probe with no `touches`
+  line is picked by every range, so a forgotten line only runs too much. A range no probe touches (only
+  docs) runs nothing and exits 0. `--list` prints each probe's line. When writing a probe, list the
+  component and the engine module it drives and the Go file behind the bindings it calls, not
+  `Engine.ts` unless the probe checks the engine itself (most probes go through it) and never
+  `frontend/wailsjs/` (`wails dev` regenerates it on any binding change, which would pick every probe).
 - **A hung or throwing probe names its place** (#301): a probe running over 5 minutes (`PROBE_TIMEOUT`, seconds) is stopped with `timed out after N s` and `step`, the `P.until` it waited in (its `what`) or the `P.settle` with its client reads pending (`window.__probeStep`); a throw prints `line`, `<file>:<line>:<col>` of the probe body where it stopped. Give every `P.until` a `what`.
 - **A lost page does not stall the run, and a failure is retried once** (#388): every CDP command times out or fails when the page's socket closes, so a probe whose page timed out, navigated away or closed no longer leaves `--all` waiting for ever. After such a loss (`lostPage` in the line) the runner kills its own headless Chrome (found by its port and profile, never the dev window) and starts a new one, ends a throwaway client the lost page had left on, and runs the probe again. Any failed probe gets that one retry in a fresh page: if only the retry passes, its line has `flaky: true` and `firstFailure` (and `firstStep`) and counts as passed; a failure twice has `retried: true` and fails the run. Read a `flaky` as a page or load problem to look at, not as a pass to ignore. Trap: a trivial probe that returns at once (`return { ok: true }`) leaves the app half booted, and the next probe's page can then hang at setup; that is the same stall, and the retry covers it.
+- **On the real GPU** (#747): `PROBE_GPU=1 bun run probe <name>` starts the probes' Chrome on the machine's GPU (D3D11 through ANGLE here) instead of SwiftShader. A fault of a real rasteriser (depth precision, a huge triangle clipped round the camera) never shows on SwiftShader: the sea's one-quad flicker in flight counted 551 jumping pixels on the GPU and 3 on SwiftShader. Frames are also many times faster (`coast-flight` 5 s against 150 s). The probes' timings and the bench baseline are SwiftShader's, so don't compare those across the two; `WEBGL_debug_renderer_info` in the page names the renderer.
 - **One-off checks**: `bun run probe probes/scratch/<x>.js` (any argument ending in `.js` or holding a
   slash is a path, from where you typed it) runs a probe file from anywhere, with `P` in scope.
   `frontend/probes/scratch/` is git-ignored: put diagnostics and throwaway views there, so they never
@@ -201,10 +309,13 @@ change, and write a new probe instead of an ad-hoc CDP script when the check is 
   or a throw fails it. `P` (`probes/lib.js`) is in scope:
   - `P.e` (the Engine), `P.scene(line or object)`, `P.BENCH` (the benchmark scene), `P.settle()` (waits for client reads and the spawn layer's version to go quiet, #393)
     (frames until the client reads stop), `P.frames(n)`, `P.until(fn, ms, what)`, `P.perf()`
-    (`measurePerf` with frames stepped), `P.state()` (the app's own `editor`/`prefs`/`ui`),
+    (`measurePerf` with frames stepped), `P.e.timer.setTimescale(0)` (holds the clock: animations, the liquids'
+    frames and the sky stay put while frames still draw, for shots that must differ only by what you changed),
+    `P.state()` (the app's own `editor`/`prefs`/`ui`),
     `P.app(path)` (any app module, the page's own instance) and `P.glError()`.
   - Pictures: `P.shot(draw?)` steps a frame (or runs `draw`) and reads the canvas back in the same
-    task, `{ w, h, px, lit }` (`lit`, the share of pixels not black, so a blank read can't pass as
+    task (so whatever the frame sets each frame, such as a mesh's `visible` from a preference, is set
+    back before the read: hide such a mesh through its `material.visible` instead), `{ w, h, px, lit }` (`lit`, the share of pixels not black, so a blank read can't pass as
     "the same"); `P.diff(a, b, threshold, region)` gives the share of pixels that differ (`off`) and
     the mean difference; `P.busy(img, region)` how busy a picture is (neighbour differences: shimmer,
     noise); a region is `{ x0, x1, y0, y1 }` as shares of the picture, y0 = 0 the top.
@@ -226,7 +337,7 @@ change, and write a new probe instead of an ad-hoc CDP script when the check is 
     A pixel on an antialiased edge reports a neighbour (`near: true`).
   - Viewport input: `P.click(x, y, opts, frames)` moves, presses and releases the pointer on the canvas and steps a frame; `P.drag([x, y], [x, y], steps, opts)` strokes; `x`, `y` are shares of the viewport, y = 0 the top, `opts` the event's `button`, `altKey`, `ctrlKey`, `shiftKey`. Setting `e.ndc` does not do this: the handlers overwrite it from the event. The status bar and tool state are read after the helper returns (its frame lets the handlers' messages land); `walkable` uses it.
   - Aiming and menus (#309): `P.lookAt({ x, y, z }, { yaw, pitch, back })` flies the camera `back` yards from an editor point, looking at it, whatever Follow the Ground says (a flying camera is its own target, so a view "on" a point puts the camera inside it; a following one lifts the target onto the terrain, above a cave). `P.contextMenu(x, y)` right-clicks the viewport at shares of it (default the centre) and returns `ui.contextMenu` (null for no menu); `teleport-trigger` uses both. Trap: on the benchmark scene (Follow the Ground on) the view still moves for a few frames after `P.lookAt`, so a probe comparing two states frame by frame steps `P.frames(3)` first and checks the first state again after the second (`particles-reach` failed once without it, #330).
-  - Writing the client (#368): `await P.sandboxClient()` points every client read and write of the Go side (`clientDataDir`, the asset server's archives) at a throwaway copy of the client's Data folder in the user's cache (`Meld/probe-client`: the archives hard links to the real ones, a symbolic link across volumes, and `patch-3.MPQ` a copy made afresh at each call), so a probe can press what writes Meld's patch (Import PNG…, Save in the spell editor, Generate) and check the result in the app. It throws when it can't, so a probe never writes the real client by mistake. `P.endSandbox()` ends it and returns `realUnchanged` (the real patch kept its size and time), which a probe should check; the runner ends it after every probe anyway. `P.sandboxFile(name, bytes)` writes a file (a `Blob` or bytes made in the page) into its scratch folder and returns the path, for a binding that reads a file the user picked; stub the dialog binding (`window.go.main.App.OpenIconsDialog = async () => [path]`, restored in a `finally`), since the wailsjs wrappers look it up at call time. `icons` is the example (`loading-screen` and `world-map` too). Traps: only `wails dev` offers it; the owner's dev window shares the Go process, so while it is on that window reads and writes the copy too, which is why it ends by itself after 10 minutes; and nothing that closes the game, starts the servers or writes the server's tables runs meanwhile (`gameSession`, `clientRoot`, an `installClosed` with server tables and every binding that writes the world database answer with an error: a saving binding takes its server folder from `serverForWrite` or `optionalServerForWrite`, never `serverAndData`, and `TestSandboxRefusesWorldDatabaseWrites` lists them, #383), so a check of those still needs the real client and database. A new binding that writes the world database belongs in that test (`make test` runs it when `frontend/dist` exists; by hand, `go test -run TestSandbox .` at the repo root).
+  - Writing the client (#368): `await P.sandboxClient()` points every client read and write of the Go side (`clientDataDir`, the asset server's archives) at a throwaway copy of the client's Data folder in the user's cache (`Meld/probe-client`: the archives hard links to the real ones, a symbolic link across volumes, and `patch-3.MPQ` a copy made afresh at each call), so a probe can press what writes Meld's patch (Import PNG…, Save in the spell editor, Generate) and check the result in the app. It throws when it can't, so a probe never writes the real client by mistake. `P.endSandbox()` ends it and returns `realUnchanged` (the real patch kept its size and time), which a probe should check; the runner ends it after every probe anyway. `P.sandboxFile(name, bytes)` writes a file (a `Blob` or bytes made in the page) into its scratch folder and returns the path, for a binding that reads a file the user picked; stub the dialog binding (`window.go.main.App.OpenIconsDialog = async () => [path]`, restored in a `finally`), since the wailsjs wrappers look it up at call time. `icons` is the example (`loading-screen` and `world-map` too). Traps: only `wails dev` offers it; the owner's dev window shares the Go process, so while it is on that window reads and writes the copy too, which is why it ends by itself after 10 minutes; and nothing that closes the game, starts the servers or writes the server's tables runs meanwhile (`gameSession`, `clientRoot`, an `installClient` with server tables and every binding that writes the world database answer with an error: a saving binding takes its server folder from `serverForWrite` or `optionalServerForWrite`, never `serverAndData`, and `TestSandboxRefusesWorldDatabaseWrites` lists them, #383), so a check of those still needs the real client and database. A new binding that writes the world database belongs in that test (`make test` runs it when `frontend/dist` exists; by hand, `go test -run TestSandbox .` at the repo root).
   - A timeout in `P.until` or `P.settle` names the longest frame and the longest wait between frames
     during the wait (`P.stalls`), so a stall doesn't look like a broken feature.
   - `P.frames` waits after each frame until the GPU has drawn it (`P.drawn`, a WebGL2 fence). Without
@@ -254,7 +365,7 @@ change, and write a new probe instead of an ad-hoc CDP script when the check is 
   another in the game object editor, and undone), `object-tilt` (#229, the Sunken Chest drawn tilted
   and its rotation kept by a move's SQL), `object-loot` (#220, a vein's shared loot list in the game
   object editor's Contents tab, a copy of its own, an added item, Make it a chest and the respawn time,
-  nothing written), `walkable` (#175, the navmesh view's tiles, a path round holes, a WMO's floors), `walkable-worker` (#508, the benchmark scene's tiles built in the Web Workers match a main-thread build, with a shorter longest `NavPreview.update`), `walkable-server` (#240, the server's own mmaps in the benchmark scene, drawn on the ground and walked; needs the VMaNGOS folder's `data/mmaps`), `walkable-wmo-liquid` (#281, Ironforge's forge lava is slime area in the browser's build as in the server's mmaps; needs `data/mmaps`), `erode` (#165, the Erode brush and the area pass on a Mountains map, with undo; #242, the area pass's settled mask), `weather` (#185, rain, snow and a sandstorm with the storm light, and the Zones dialog's weather sliders), `weather-wind` (#244, rain's ground splashes and #316, snow's settled flakes, the wind's lead and streak tilt, and the weather through a Stormwind shop's door; #315, from outside its door the drops under its roof hidden), `zones-fit` (#247, the Zones dialog has no horizontal scrollbar), `creature-spells` (#243, the creature editor's Spells tab: a creature's list with names, icons and text, a search and add, Revert; nothing written), `creature-spell-fields` (#255, the Creature tab names its auras and its spawn spell; #367, their Find browses spells by category; nothing written), `spawn-drag` (#514, moving a spawn a frame at a time leaves `SpawnLayer.version` alone, the moves being read through `moveSeq` and `movedSince`; needs the world database), `spawn-groups` (#172, formations and pools read, built by clicks, written as SQL and undone; nothing written), `quest-editor` (#259, a quest's names, givers and refused saves, over the creature editor; nothing written), `object-quests` (#293, the game object editor's Quests tab, and a chest refused as a giver; nothing written), `object-find` (#351, Tools › Game Objects… opens on Find object, searches by name and entry and opens the result; nothing written), `messages-conditions` (#160, the creature editor's Messages tab lists a text shown under a condition as an editable row, with Save, Revert, Add text and ✕; nothing written), `loading-screen` (#218, Map Properties lists the client's loading screens and previews the chosen one; #382, Picture… writes a PNG made in the page as a new one in the throwaway client), `hole-walls-fade` (#249, the hole walls show near the camera and round the cursor, not from across the map), `instance-open` (#222, the Start dialog picks a block on an instance's tiles and opens it; #271, a WMO-only instance opens as its building), `compile-alpha` (#526, a compile in the throwaway client keeps every unpainted chunk's alpha bytes and changes only the painted spot's texels), `region-alpha` (#636, Azeroth 31_49 3x3's alpha maps come as one GET from `/wow/handoff`, not in LoadRegion's JSON: 4096 bytes a layer but each chunk's first, the URL served once; prints the ms of the call and the fetch), `brd-fly` (#286, flying through Blackrock Depths with the names over spawns on: the sight lines test the dungeon's WMO through its bounds tree and no frame stalls; needs the world database), `brd-pit` (#289, the Ring of Law seen from the stands draws the arena, not the floor plane under the map), `top-down-shot` (#554, `renderMinimapTile` on the benchmark scene draws the tile without a frame of the view: the frame counter and the clock stay put, the shot is lit and the same twice, and the report has the Paths and baked shadows section; prints the ms a shot), `world-map` (#219, World › World Map lists Elwynn's twelve exploration overlays and Generate redraws Northshire Valley's; #382, Write to Client in the throwaway client, read back), `teleport-trigger` (#306, a right-click on the Deadmines entrance trigger teleports into the Deadmines, and a spellcaster portal's destination is read; needs the world database), `flight-paths` (#180, World › Flight Paths in Redridge: Lakeshire's stop picked and dragged, a route's point drawn, Fly it and back; nothing saved), `wmo-collide` (#305, with Camera Collision on a 13 yd step at a Trade District wall stops off it, in the room, the near plane at 0.5 yd; off, it flies through; #310, the eye comes down to 3 yd over the street's floor), `walk-wmo` (#312, Camera › Walk stands 3 yd over the Trade District street's floor, not the terrain), `shadow-redraw` (#326, a still view redraws neither sun shadow map; moving an object, sculpting, holes, undo, a layer toggle and a turn of the camera each redraw the near one; #324, the far one holds through a small turn and a sun moved under 0.1°, and is redrawn after a long pan or a larger sun move), `shadow-poses` (#346, on the creatures and objects-mixed maps with animations on, a still view draws only the moving models into the near shadow map, and with the clock held the view matches a full redraw and differs without the moving pass), `shadow-sun-drift` (#366, with the sun stepped under 0.1° a frame, the near map's lookup matrix stays the one it was drawn with until its redraw), `pose-drawn` (#328, on the creatures map only the animated spawn types the cull drew are posed each frame, none while creatures and NPCs are hidden, all again on the frame they show, and with Prop animations off each drawn type holds its first frame), `attach-follow` (#329, attached objects follow their parent's drawn instance through a move, an undo-style snapshot that detaches one, re-parenting, a type change, a sculpt re-snap and the parent deleted and added back, on a flat map), `object-move` (#510, dragging one of 3000 cubes of one type rewrites its own instance row and packs nothing again, a sculpt re-snap leaves every drawn row matching its object, and the moved cube is picked where it went, on a flat map), `objects-near` (#512, on the everything benchmark map the Clear tool's models under the brush, the Doodad brush's spacing neighbours and prop list, and the area's objects, read from the layer's cells, match a scan of every object, after the models loaded and after a move of every tenth root; prints the ms a call; about 90 s), `select-groups` (#630, on the everything benchmark map with every root in a group of ten, `withGroups` for each model under a Select brush, read from the layer's group index, matches a scan of every object, and Group and Ungroup with their undo keep the index; prints the ms a brush spot against the scan's; about 90 s), `hand-tilt` (#344, Z+scroll tilts and rolls the Place preview 5° a notch with the camera still, the click places with that tilt over Random tilt, a selected model tilts as one undo step and flips past 180°, scrolled back to 0 Random tilt applies again, and with Z released the wheel tilts nothing), `world-settings` (#571, Map Properties' sea on/off, sea level and rock/dirt roles through `setWorldSettings`: one undo step each, dirty flag, undo and redo, roles surviving a tab switch), `activate-same` (#547, Ctrl+Tab with one tab and activating the open document keep the palette and dirty flag the editor holds; with two tabs a cycle still moves and back), `hover-outline` (#641, the faint stroke round the helper cube under the pointer with the Select tool: cleared off it, none on a selected cube, no pick while still, none with the pref off or the Sculpt tool), `selection-visuals` (#551, on objects-mixed the outline colours of 16 floating models and one model's warn boxes match a scan of every object, still, dragged, moved away, beside a hidden model and a prop attached elsewhere; prints `updateSelectionVisuals`' ms a frame; about 3 minutes), `outline-heights` (#567, the selection outline's red underground marks follow a sculpt stroke through the terrain's shared height texture, which uploads only the edited texels), `effects-drag` (#511, on the lights benchmark map a brazier dragged a frame at a time and a sculpt stroke under the braziers update the lights, flames, particle pools and model boxes of the moved objects without a rebuild, leave no shadowed light dark for a frame, and match a full rebuild; prints the ms a frame of `PropEffects.update`, `ParticleLayer.update` and `WmoRooms.update` for before and after), `particles-reach` (#330, the far-emitter pre-test runs the same particle pools and ribbons as the exact range and view test, on the benchmark scene; `PROBE_MAP` for a benchmark map), `item-editor` (#353, Tools › Items…: the Worn Shortsword's tooltip, held and alone, typed values in the tooltip, a refused level, Change look… and Change icon…, Stats one a row with an Equip bonus, the right-click .additem copy, a bow's look shot visual, New item from a kind; #355, a set piece's set block; nothing written), `spell-editor` (#294, Tools › Spells…: Fireball's tooltip with its tokens filled in, its effects and visual, typed values in the tooltip, a refused cost, Change icon… and Take the visual of; #360, New spell's starters; nothing written), `spell-visual` (#361, the visual composer: Blizzard with Rain of Fire's area, a hovered and a picked effect model, Use this visual waiting for Save; nothing written), `patch-cache` (#471, a patch write in the throwaway client keeps Stormwind's decoded WMO in the asset server's cache and reads a rewritten icon again), `icons` (#364, the icon grid's Import PNG… and Export … as PNG…, the search narrowing the export, and the bindings refusing a missing file and folder; #368, Import PNG… of a PNG made in the page, listed and previewed, in the throwaway client; the real client left alone), `nothing-to-draw` (#333, Blackrock's open-door collision M2 loads once, with no warning, as a wireframe marker of its hull that casts no shadow), `preview-idle` (#589, the asset browser's preview spins a hovered tile's model a few seconds and then draws nothing, spins again under the pointer, keeps to the FPS limit, and the Preview window on a helper cube draws only while Turn is checked; prints the frames each drew in 2 s; about 30 s), `release-asset` (#506, a waterfall built and released fifty times as a thumbnail, and the Preview window opened and closed on it, leave `animatedCount()`, the per-frame texture and colour animation lists, as they were), `release-models` (#505, the objects-mixed benchmark map, then the buildings one opened and closed: the registry's models, shared materials and model textures and the renderer's geometries return to the first map's numbers, its textures to within 3 %, since `renderer.info.memory.textures` also counts the shared textures uploaded only when first drawn: the liquids' animation frames (up to 30 a liquid, one as each frame comes round), the room gate's mask and the first map's model textures newly in view, none of them the closed map's (#623); about 3 minutes), `ui-scale` (#372, the interface at 150 %: fits, sharp canvas, pointer, menus and shortcuts), `reference-image` (#184, a plan laid over a flat map: drawn on the ground and over the top-down view, dragged, and turned into zones, heights, textures and the mask, each undone), `terrain-cell-tex` (#394, the no-tufts overlay and a lasso area's tint share one texture and draw together, and the terrain shader's samplers leave a unit free under WebGL2's 16), `model-worker` (#507, Stormwind's bounds tree, LOD and group cull built in the model workers: the longest stall while it loads, and the results against a main-thread build), `autosave` (#546, on a dirty 1024-cell map no recovery copy is taken while a stroke is held, and the copy after it encodes heights and paint over many turns with the fallback encoder forced, the longest stretch without a turn far under the one-go encoding's; #637, it sends them a slice a `SaveRecoveryPart` call, each call short; the copy loads back with the edits and is dropped; prints the ms of each and the longest stretch while the parts go), `console-clean` (#336, loading the benchmark scene logs no console warning or error and no HTTP 400+ besides a list of known ones with their issues, and the terrain asks only for the `_s` sheen twins the client has; drop a known entry when its issue is fixed). Port a recipe from `docs/tests/` into a probe when you next use it, and say in its entry
+  nothing written), `walkable` (#175, the navmesh view's tiles, a path round holes, a WMO's floors), `walkable-worker` (#508, the benchmark scene's tiles built in the Web Workers match a main-thread build, with a shorter longest `NavPreview.update`), `walkable-server` (#240, the server's own mmaps in the benchmark scene, drawn on the ground and walked; needs the VMaNGOS folder's `data/mmaps`), `walkable-wmo-liquid` (#281, Ironforge's forge lava is slime area in the browser's build as in the server's mmaps; needs `data/mmaps`), `erode` (#165, the Erode brush and the area pass on a Mountains map, with undo; #242, the area pass's settled mask), `smooth-selection` (#713, Terrain › Smooth Selection over a square and a free-form area on a noisy Mountains patch: nothing outside changes, the falloff, undo and redo, cancel; #721, the Raise, Lower, Flatten and Roughen modes and the dialog's Mode), `weather` (#185, rain, snow and a sandstorm with the storm light, and the Zones dialog's weather sliders), `weather-wind` (#244, rain's ground splashes and #316, snow's settled flakes, the wind's lead and streak tilt, and the weather through a Stormwind shop's door; #315, from outside its door the drops under its roof hidden), `zones-fit` (#247, the Zones dialog has no horizontal scrollbar), `creature-spells` (#243, the creature editor's Spells tab: a creature's list with names, icons and text, a search and add, Revert; nothing written), `creature-shop` (#577, the creature editor's Shop tab: a row moved and Revert, a row removed and the editor's Discard; nothing written), `creature-spell-fields` (#255, the Creature tab names its auras and its spawn spell; #367, their Find browses spells by category; nothing written), `creature-pickers` (#699, the Creature tab's faction template picker, Pet family, Trainer race, AI and mask tick lists, and the Looks tab's mount slot; nothing written), `object-pickers` (#702, the game object editor's faction, lock, loot, display, cursor, page, language and page material names, and Lock's Find; nothing written), `item-pickers` (#701, the item editor's set, disenchant, random enchantment, lock, page, map, cooldown category and honor rank names, and Item set's Find; nothing written), `creature-list-pickers` (#700, the creature editor's loot, pickpocket, equipment and spell lists named and marked as the creature's own, Loot's Find offering its own list and searching by an item's name, the trainer, gossip and vendor lists with the creatures sharing them, and the Messages tab's menu, map point and condition names; nothing written), `quest-pickers` (#704, the quest editor's start and end scripts marked as the quest's own, exclusive group, condition, mail template with its Find, reputation ranks, spillover ticks and point map; nothing written), `id-pickers` (#705, the Zones dialog's flag ticks and liquid select, Map Properties' ghost map select, the Spells tab's target parameter pickers, ticks and checkbox, a spawn's Display › Choose…, and the flight window's mount creature name; nothing written), `spell-pickers` (#703, the spell editor's form, aura state, item class and subclass, attribute and misc value tick lists and selects, its spell focus, category, global cooldown category and active icon names, and the icon Find; nothing written), `spawn-drag` (#514, moving a spawn a frame at a time leaves `SpawnLayer.version` alone, the moves being read through `moveSeq` and `movedSince`; needs the world database), `spawn-groups` (#172, formations and pools read, built by clicks, written as SQL and undone; nothing written), `quest-editor` (#259, a quest's names, givers and unsaved bad edits, over the creature editor; nothing written), `object-quests` (#293, the game object editor's Quests tab, and a chest offered no quests or giver slot; nothing written), `object-find` (#351, Tools › Game Objects… opens on Find object, searches by name and entry and opens the result; nothing written), `messages-conditions` (#160, the creature editor's Messages tab lists a text shown under a condition as an editable row, with Save, Revert, Add text and ✕; nothing written), `loading-screen` (#218, Map Properties lists the client's loading screens and previews the chosen one; #382, Picture… writes a PNG made in the page as a new one in the throwaway client), `hole-walls-fade` (#249, the hole walls show near the camera and round the cursor, not from across the map), `instance-open` (#222, the Start dialog picks a block on an instance's tiles and opens it; #271, a WMO-only instance opens as its building), `wmo-only-frame` (#272, a WMO-only map made with New World: Launch's spot over its building is the server's 0,0, where Publish writes the building, and the corner's frame once WMO-only is unticked; nothing written), `new-world-shape` (#744, the New world page's Height, Roughness, Erosion, Land (#746) and Sea depth, and Large Mountains, Rolling hills and Canyon worlds: peak heights, the seabed off the coast, erosion against the same seed uneroded, the Canyon's floor and walls; saves a view over each with `--shot`; about 3 minutes), `new-world-image` (#745, the From a heightmap… card with a stubbed file dialog and a grey cone made in the page: its picture, Black at, White at, Sea and Erosion none, and a Small world from it near White in the middle and Black at the corners under the sea; about 25 s), `new-world-pack` (#733, Ground textures: Tanaris's textures read from its tiles, shown as eight role pictures and painting a Small Island, then Default again; about 35 s), `new-world-trees` (#758, Trees and rocks: Duskwood's trees, bushes and rocks scattered over a Small Island, none in the sea, on steep ground or above the snow line, two undo steps, and None with no models; about 90 s), `new-world-lakes` (#759, the water row: Sea level, Lakes and Lakes of, magma in the Rolling hills picture, and a Medium Rolling hills world with the sea at 5 yd and magma lakes in its basins above it, at their rims, sand on their shores, sent by `exportInput`; about 40 s), `coast-foam` (#747, a Large Island's coast seen from 1200 yd swings little between shots a sub-pixel turn apart: the terrain's foam line, widened to the pixel, adds under 20 pixels of swing, or under half the thin line's; about 140 s), `coast-flight` (#747, the same coast with the camera stepped a frame of flight at a time: the sea's grid holds the shore still where the one quad it was swapped sea and land; shows only on a real GPU, so run it with `PROBE_GPU=1`; about 5 s there, 150 s on SwiftShader), `new-world-tiles` (#46, a new world's tiles picked on the 64×64 grid in the Start dialog, hidden and left out of the export where not picked, Launch in the grid's frame, and Map Properties' grid adding a tile back with undo and growing the map past its square with a model keeping its server spot; nothing written), `compile-alpha` (#526, a compile in the throwaway client keeps every unpainted chunk's alpha bytes and changes only the painted spot's texels), `restore-paint` (#645, a chunk compiled painted into the throwaway client's patch, restored to the client's paint with undo and redo and compiled again, reads back as the client's own), `region-alpha` (#636, Azeroth 31_49 3x3's alpha maps come as one GET from `/wow/handoff`, not in LoadRegion's JSON: 4096 bytes a layer but each chunk's first, the URL served once; prints the ms of the call and the fetch), `brd-fly` (#286, flying through Blackrock Depths with the names over spawns on: the sight lines test the dungeon's WMO through its bounds tree and no frame stalls; needs the world database), `brd-pit` (#289, the Ring of Law seen from the stands draws the arena, not the floor plane under the map), `top-down-shot` (#554, `renderMinimapTile` on the benchmark scene draws the tile without a frame of the view: the frame counter and the clock stay put, the shot is lit and the same twice, and the report has the Paths and baked shadows section; prints the ms a shot), `world-map` (#219, World › World Map lists Elwynn's twelve exploration overlays and Generate redraws Northshire Valley's; #382, Write to Client in the throwaway client, read back), `teleport-trigger` (#306, a right-click on the Deadmines entrance trigger teleports into the Deadmines, and a spellcaster portal's destination is read; needs the world database), `flight-paths` (#180, World › Flight Paths in Redridge: Lakeshire's stop picked and dragged, a route's point drawn, Fly it and back; nothing saved), `wmo-collide` (#305, with Camera Collision on a 13 yd step at a Trade District wall stops off it, in the room, the near plane at 0.5 yd; off, it flies through; #310, the eye comes down to 3 yd over the street's floor), `walk-wmo` (#312, Camera › Walk stands 3 yd over the Trade District street's floor, not the terrain), `wmo-nav-fail` (#515, Stormwind's room data made to fail once is counted, logged and not fetched each frame, and loads on the retry after `RETRY_MS`), `shadow-redraw` (#326, a still view redraws neither sun shadow map; moving an object, sculpting, holes, undo, a layer toggle and a turn of the camera each redraw the near one; #324, the far one holds through a small turn and a sun moved under 0.1°, and is redrawn after a long pan or a larger sun move), `shadow-poses` (#346, on the creatures and objects-mixed maps with animations on, a still view draws only the moving models into the near shadow map, and with the clock held the view matches a full redraw and differs without the moving pass), `shadow-sun-drift` (#366, with the sun stepped under 0.1° a frame, the near map's lookup matrix stays the one it was drawn with until its redraw), `pose-drawn` (#328, on the creatures map only the animated spawn types the cull drew are posed each frame, none while creatures and NPCs are hidden, all again on the frame they show, and with Prop animations off each drawn type holds its first frame), `attach-follow` (#329, attached objects follow their parent's drawn instance through a move, an undo-style snapshot that detaches one, re-parenting, a type change, a sculpt re-snap and the parent deleted and added back, on a flat map), `object-move` (#510, dragging one of 3000 cubes of one type rewrites its own instance row and packs nothing again, a sculpt re-snap leaves every drawn row matching its object, and the moved cube is picked where it went, on a flat map), `objects-near` (#512, on the everything benchmark map the Clear tool's models under the brush, the Doodad brush's spacing neighbours and prop list, and the area's objects, read from the layer's cells, match a scan of every object, after the models loaded and after a move of every tenth root; prints the ms a call; about 90 s), `select-groups` (#630, on the everything benchmark map with every root in a group of ten, `withGroups` for each model under a Select brush, read from the layer's group index, matches a scan of every object, and Group and Ungroup with their undo keep the index; prints the ms a brush spot against the scan's; about 90 s), `hand-tilt` (#344, Z+scroll tilts and rolls the Place preview 5° a notch with the camera still, the click places with that tilt over Random tilt, a selected model tilts as one undo step and flips past 180°, scrolled back to 0 Random tilt applies again, and with Z released the wheel tilts nothing), `place-undo` (#719, undoing a Place and fit ground step with the cursor over the model: the next frames run, the ground comes back, under 100 ms of script), `place-spawn-size` (#672, the Place tool's preview of a creature and a game object template sized away from 1 is drawn at the spawn's size, Shift+scroll leaves it, and the placed spawn matches; needs the world database), `world-settings` (#571, Map Properties' sea on/off, sea level and rock/dirt roles through `setWorldSettings`: one undo step each, dirty flag, undo and redo, roles surviving a tab switch), `activate-same` (#547, Ctrl+Tab with one tab and activating the open document keep the palette and dirty flag the editor holds; with two tabs a cycle still moves and back), `tab-switch-drag` (#549, a tab switch in the middle of a gizmo drag on one model and on a group of two puts the turn's one undo step in the tab it began in and none in the other, and drops an Alt+right brush-size drag; the switch goes through `switchDocument`, since `cycleDocument` lands on whatever tab the dev page has open next), `gizmo-undo` (#694, the Select tool's gizmo on a flat map: one model's ring, height arrow, scale knob and move arrow, and a group's ring and arrow, each one undo step that Undo and Redo restore), `hover-outline` (#641, the faint stroke round the helper cube under the pointer with the Select tool: cleared off it, none on a selected cube, no pick while still, none with the pref off or the Sculpt tool), `selection-visuals` (#551, on objects-mixed the outline colours of 16 floating models and one model's warn boxes match a scan of every object, still, dragged, moved away, beside a hidden model and a prop attached elsewhere; prints `updateSelectionVisuals`' ms a frame; about 3 minutes), `outline-heights` (#567, the selection outline's red underground marks follow a sculpt stroke through the terrain's shared height texture, which uploads only the edited texels), `effects-drag` (#511, on the lights benchmark map a brazier dragged a frame at a time and a sculpt stroke under the braziers update the lights, flames, particle pools and model boxes of the moved objects without a rebuild, leave no shadowed light dark for a frame, and match a full rebuild; #629, the three shadowed lights' cube maps are redrawn in turn through both, about a frame in three each (`redraws`), not light 0's every frame; prints the ms a frame of `PropEffects.update`, `ParticleLayer.update` and `WmoRooms.update` for before and after), `particles-reach` (#330, the far-emitter pre-test runs the same particle pools and ribbons as the exact range and view test, on the benchmark scene; `PROBE_MAP` for a benchmark map), `item-editor` (#353, Tools › Items…: the Worn Shortsword's tooltip, held and alone, typed values in the tooltip, a level past 255 left unsaved, Change look… and Change icon…, Stats one a row with an Equip bonus, the right-click .additem copy and #681's Copy item entry, a bow's look shot visual, New item from a kind; #355, a set piece's set block; #677, the search sorted by item level; nothing written), `spell-editor` (#294, Tools › Spells…: Fireball's tooltip with its tokens filled in, its effects and visual, typed values in the tooltip, a cost past an unsigned int left unsaved, Change icon… and Take the visual of; #360, New spell's starters; nothing written), `spell-visual` (#361, the visual composer: Blizzard with Rain of Fire's area, a hovered and a picked effect model, Use this visual waiting for Save; nothing written), `patch-cache` (#471, a patch write in the throwaway client keeps Stormwind's decoded WMO in the asset server's cache and reads a rewritten icon again), `icons` (#364, the icon grid's Import PNG… and Export … as PNG…, the search narrowing the export, and the bindings refusing a missing file and folder; #368, Import PNG… of a PNG made in the page, listed and previewed, in the throwaway client; the real client left alone; #683, Tools › Icons…: a picked icon's name, SpellIcon ID and spells, Copy name), `nothing-to-draw` (#333, Blackrock's open-door collision M2 loads once, with no warning, as a wireframe marker of its hull that casts no shadow), `preview-idle` (#589, the asset browser's preview spins a hovered tile's model a few seconds and then draws nothing, spins again under the pointer, keeps to the FPS limit, and the Preview window on a helper cube draws only while Turn is checked; prints the frames each drew in 2 s; about 30 s), `release-asset` (#506, a waterfall built and released fifty times as a thumbnail, and the Preview window opened and closed on it, leave `animatedCount()`, the per-frame texture and colour animation lists, as they were), `release-models` (#505, the objects-mixed benchmark map, then the buildings one opened and closed: the registry's models, shared materials and model textures and the renderer's geometries return to the first map's numbers, and the renderer's own textures (those on the GPU that are not the texture cache's, `api.isCachedTexture`) within a few of the first map's; #658: the renderer's whole count (`renderer.info.memory.textures`) also grows with the cached textures uploaded only when first drawn, the liquids' animation frames (up to 30 a liquid, one as each frame comes round, so more the longer the run) and the first map's model textures newly in view, which made a whole-run check fail with +22, so the probe counts the textures on the GPU through three's `dispose` listeners and leaves the cache's out; the second map's liquid, particle and weather textures stay cached by design; about 2 minutes), `ui-scale` (#372, the interface at 150 %: fits, sharp canvas, pointer, menus and shortcuts), `reference-image` (#184, a plan laid over a flat map: drawn on the ground and over the top-down view, dragged, and turned into zones, heights, textures and the mask, each undone), `terrain-cell-tex` (#394, the no-tufts overlay and a lasso area's tint share one texture and draw together, and the terrain shader's samplers leave a unit free under WebGL2's 16), `model-worker` (#507, Stormwind's bounds tree, LOD and group cull built in the model workers: the longest stall while it loads, and the results against a main-thread build), `far-wmo-lod` (#691, in Elwynn's world view the far WMO LODs drawn are merged by class with every texture layer drawn, and a house forced to its LOD close up looks as the full one does; about 90 s), `autosave` (#546, on a dirty 1024-cell map no recovery copy is taken while a stroke is held, and the copy after it encodes heights and paint over many turns with the fallback encoder forced, the longest stretch without a turn far under the one-go encoding's; #637, it sends them a slice a `SaveRecoveryPart` call, each call short; the copy loads back with the edits and is dropped; prints the ms of each and the longest stretch while the parts go), `console-clean` (#336, loading the benchmark scene logs no console warning or error and no HTTP 400+ besides a list of known ones with their issues, and the terrain asks only for the `_s` sheen twins the client has; drop a known entry when its issue is fixed). Port a recipe from `docs/tests/` into a probe when you next use it, and say in its entry
   that the probe exists.
 
 ## The live app without Claude in Chrome (headless Chrome over CDP)
@@ -265,10 +376,11 @@ sequence, a question no probe asks). Start
 `make dev` in the background, wait until `curl localhost:34115/wow/status` answers, then drive a
 headless Chrome over the DevTools protocol from a scratch folder (not the repo):
 `uv run -q --with websocket-client python -u cdp.py "http://localhost:34115/?nosave" shot step1.js step2.js`.
-The script (about 40 lines) starts `chrome.exe --headless=new --remote-debugging-port=9333
+The script (about 40 lines) starts `chrome.exe --headless=new --remote-debugging-port=0
 --user-data-dir=<scratch>\profile --window-size=1400,900 --use-angle=swiftshader
---enable-unsafe-swiftshader about:blank`, reads the page's websocket from
-`http://127.0.0.1:9333/json`, sends `Page.navigate`, waits 4 s, and for each JS file runs
+--enable-unsafe-swiftshader about:blank`, reads the port Chrome chose from `<scratch>\profile\DevToolsActivePort` (first line; a fixed port can
+belong to another run) and the page's websocket from
+`http://127.0.0.1:<port>/json`, sends `Page.navigate`, waits 4 s, and for each JS file runs
 `Runtime.evaluate` on `(async () => { <file> })()` with `awaitPromise` and `returnByValue`, prints
 the result and saves `Page.captureScreenshot` as `<prefix>-<n>.png`. A step loads a scene with
 `__loadScene`, then steps the app with `await new Promise(r => setTimeout(r, 50)); __engine.frame()`
@@ -333,6 +445,23 @@ git diff --cached                        # must show only your lines
 - Commit the index with plain `git commit` (`git commit <path>` would take the whole file), then
   check `git status`: the owner's hunks must still show as unstaged.
 
+## The docs site (VitePress)
+
+Checks: that `docs/` still builds into the site `.github/workflows/docs.yml` publishes. Run `make docs`
+(or `cd frontend && bun run docs:build`); `bun run docs:preview` then serves
+`docs/.vitepress/dist` at `http://localhost:4173/Meld/`. The build fails on a dead link between pages.
+- A new page needs a line in the sidebar in `docs/.vitepress/config.mts`, or it is reachable only by search.
+- Raw HTML in the Markdown renders as text (`markdown.html` is off, so `<placeholder>`s in prose
+  don't break Vue); a link to a file outside `docs/` (the README, source files) must be a full GitHub URL.
+- The scripts run Bun with `--no-install`: without it Bun auto-installs Vue from its global cache for
+  the pages (which sit outside `frontend/`) and the build fails to resolve `@vue/runtime-dom`.
+- A clean build does not prove the site runs: the page is prerendered HTML, so it reads fine while
+  its scripts are dead (search, the sidebar's arrows and the theme switch then do nothing, and links
+  reload the whole page). Open the preview, or the published site, and check
+  `document.querySelector('#app').__vue_app__` is set. Trap: the `vue` alias in `config.mts` must name
+  the package folder; `require.resolve('vue')` gives the CommonJS entry, which left the browser build
+  with `vue` undefined ("Cannot read properties of undefined (reading 'shallowRef')").
+
 ## Measuring performance (the overlay, #179)
 
 Checks: where a frame's time goes, before and after a performance change. View › Performance overlay
@@ -352,6 +481,12 @@ the same scene, the report before and after.
 - Northshire (Azeroth 32_48, 1x1, the camera over the abbey) in the dev page on 2026-10-16: about
   16 ms of CPU a frame, 9 of it three's render submit and 3.5 the shadow maps; GPU 10 ms scene,
   3.5 ms shadows; 2000 draw calls, 3.6M triangles, and stormwind.wmo alone 1.3M of them.
+- A probe's frame is slow in wall time: `P.frames` waits for SwiftShader to draw each one, about
+  0.5 s a frame in Elwynn's world view (#15). So a rule timed in ms (redraw at most once a second)
+  cannot be checked or measured in a probe, and what lands asynchronously (tiles, models, textures)
+  lands in far fewer frames than at 60 fps. Count such rules in frames, and give a streaming
+  measurement as counts (redraws in N frames, events landed) rather than as a rate. Skipping the
+  `P.drawn` wait does not help: the GPU backlog then stalls the frames instead.
 - The shadow maps are timed by wrapping `renderer.shadowMap.render` (`Engine.timeShadowMaps`): three
   draws them inside `renderer.render`, so without the wrap they would count as the scene.
 - **The benchmark scene.** Optimization issues and their done comments measure on this one scene, so
@@ -380,7 +515,8 @@ the same scene, the report before and after.
   185 geometries, 688 textures, 305 MB heap; the most triangles: HumanMale (54k), Wolf (44k),
   nsabbey.wmo (35k), stormwind.wmo (31k). On 2026-10-18 after #325 (a batch joins the near shadow
   cascade only with a drawn instance in its box): 1287 draw calls, 679,161 triangles (2026 and 853,913
-  before it), 173 geometries, 722 textures, 314 MB heap. Update this when a commit moves it on purpose.
+  before it), 173 geometries, 722 textures, 314 MB heap. This table is history; the guard's numbers are in `frontend/probes/bench-baseline.json`.
+  **The guard** (#429): `bun run probe bench` fails when draw calls, triangles, geometries or textures drift more than 10 % from `frontend/probes/bench-baseline.json` (the runner hands it to the page as `window.__benchBaseline`; the failing line gives both numbers). On 2026-10-25 it holds 1159 calls, 597,707 triangles, 175 geometries and 727 textures; calls vary by a few with late spawns and triangles by under 0.1 % (#350). Milliseconds and heap never fail it (SwiftShader, #226, #337). A commit that moves a count on purpose edits the file and gives the reason in its message and the before/after in the issue's done comment. The numbers hold only for the probe page (default prefs, `P.BENCH` with Follow the Ground on).
 - **Benchmark maps** (#322): generated maps that each stress one system, for performance work the
   Northshire scene can't show (how a cost grows with how much there is of something).
   `lib/bench/benchMaps.ts` builds them (`buildBenchMap(engine, kind, count?, seed?)`, `BENCH_MAPS` has
@@ -394,7 +530,8 @@ the same scene, the report before and after.
     mountains with the sea off, four tilesets blended on every chunk, holes), `water` (water, ocean, magma and slime on 70% of the
     chunks, half of them two layers deep, and the sea) and `everything` (a moderate mix on 4x4 tiles).
   - `cd frontend && bun run probe 'perf-*'` measures all of them, each on a fresh page (one probe file a
-    map, `perf-<kind>.js`, all through `P.benchMap(kind, count?)` in `lib.js`); `bun run probe
+    map, `perf-<kind>.js`, all through `P.benchMap(kind, count?)` in `lib.js`; a probe that only needs
+    the map, not its numbers, uses `P.loadBenchMap`, which skips the measurement's 25 to 70 s); `bun run probe
     perf-lights` one. A name ending in `*` runs every probe it starts. The line adds `buildMs` (making
     the map) and `loadMs` (that plus the client reads) to `bench`'s numbers. Give it a longer
     `PROBE_TIMEOUT` (900) when raising a count.
@@ -484,13 +621,21 @@ the same scene, the report before and after.
     To see where programs cost, wrap `getProgramInfoLog`, `getShaderInfoLog`, `getProgramParameter`
     and `getShaderParameter` on the context with timers and time each `frame()`.
   - Trap: a probe run that outlives the dev server fails every probe after it with "the page never set
-    up __engine"; rerun those, and the runner starts `make dev` again. The runner also checks the server when a probe fails, and waits a minute for a rebuild, then starts `make dev` before the retry (`devRestarted` in the result, #391).
+    up __engine"; rerun those, and the runner starts `make dev` again. The runner also checks the server when a probe fails, and waits a minute for a rebuild, then starts `make dev` before the retry (`devRestarted` in the result, #391). When the app restarted during a probe (`/wow/status` reports a new `started`, as when a Go change, maybe another session's, makes wails dev rebuild), the runner prints `probe: <name>: the dev server restarted during this probe` and the line has `devRebuilt` (#656): read a lost page or a failure there as the restart, and rerun the probe. The opposite trap (#387): `wails dev` sometimes does not rebuild at all after a Go change (its `Meld-dev.exe` keeps its start time, even after a `touch`), so a new binding fails with "window.go.main.App.X is not a function". The runner warns at start, and a failing probe's result has `staleBackend`, when a non-test .go file is newer than `/wow/status`' `started`; the fix is to kill `wails.exe`, `Meld-dev.exe` and the two `bun` processes and rerun, which starts `make dev` again.
+  - Trap: "the page never set up __engine" while `/wow/status` answers (a dev server that is alive but whose page is
+    stuck, #727): the result now has `pageState` (`readyState`, `window.go`, `window.runtime`, body children) and
+    `pageLog` (the console at every level, failed requests and 4xx/5xx responses), so read those first. `window.go`
+    `undefined` with an `ipc.js` error means the Wails host is half dead: kill `wails.exe`, the `bun --bun vite`
+    process and `Meld-dev.exe`, and let the runner start `make dev` again (that fixed #481's run); a 404 or failed
+    request for a module means Vite is stale. Do not restart `make dev` for an app error in `pageLog` that a code change caused.
   - **The rule for using them**: a change measured as faster on a stress map is kept only if
     `perf-everything` and `bench` (Northshire) are not slower. Give the stress map's numbers and those
     two, before and after, in the done comment.
-- Trap: a scene's `view` means an orbit (target, distance) only with Follow the Ground on; with the
-  default flying camera the target is where the camera stands. A hand-written scene or a probe that
-  places the camera by target and distance must set `cameraFollowGround: true` (#256).
+- Trap: a scene's `view` means an orbit (target, distance) only with Follow the Ground on (Orbit View);
+  in Flying View the target is where the camera stands. The app starts in Orbit View since #750, but the
+  probe runner starts every probe in Flying View (`P.flyingStart`, the camera the probes were written
+  for), so a hand-written scene or a probe that places the camera by target and distance must still set
+  `cameraFollowGround: true` (#256).
 
 ## Index of feature checks
 
@@ -500,7 +645,7 @@ the same scene, the report before and after.
 - Ground effects (grass tufts)
 - Water look (the client's combine, B-174)
 - Client clouds (B-179)
-- Liquid types from the client
+- Liquid types from the client, and a layer's kind kept in the map file (#540, probe `liquid-kinds`)
 - Selection outline colours (free, touching, buried)
 - Hover outline (#641)
 - Ground effects: no-doodad cells and density
@@ -511,15 +656,18 @@ the same scene, the report before and after.
 - Losing and restoring the previews' WebGL contexts (#213)
 - WMO culling by group (#198, #215)
 - A model's bounds tree, LOD and group cull built in the model workers (#507)
+- Far WMOs' LODs merged by class, textures in a layer array (#691)
 - Compressed client textures (DXT, #178)
 - The terrain's tileset array as DXT3 (#216)
 - The tileset array's mips (#225)
 - Preview window: particles, ribbons and texture animation (#200)
 - Weather preview and zone weather (#185); splashes, wind and doorways (#244); roofs (#315)
 - The floor plane under the map is a backdrop (#289)
+- A map with no sky shows the dark earth behind it (#339, probe `sky-dungeon`)
 - A WMO's liquids: Blackrock Depths' lava (#287)
 - A camera over a building is in none of its rooms (#300)
 - Camera collision keeps the flying camera off a WMO's walls (#305)
+- The instance batch: culling, packing and picking of placed models and spawns (#517)
 
 ### Terrain, water and map data (`docs/tests/terrain.md`)
 
@@ -528,7 +676,13 @@ the same scene, the report before and after.
 - Holes per triangle (Sculpt › Hole)
 - Hole walls (drag an edge, + and − badges)
 - Sculpt › Terrace (#166)
+- Terrain › Smooth Selection (#713), with Raise, Lower, Flatten and Roughen (#721)
 - Sculpt › Erode and Terrain › Erode (#165)
+- A new world's ground: presets in yards, erosion at creation, Canyon and the seabed (#744, probe `new-world-shape`)
+- A new world from a heightmap (#745, probe `new-world-image`)
+- A new world painted with a zone's textures (#733, probe `new-world-pack`)
+- A new world with a zone's trees (#758, probe `new-world-trees`)
+- A new world's sea level and lakes (#759, probe `new-world-lakes`)
 - Mask wand, Grow, Shrink and Feather (#183)
 - Lasso and polygon areas (#183)
 - Check Map (#176)
@@ -539,18 +693,26 @@ the same scene, the report before and after.
 - Heightmap import on a tile, Auto heights and the normal map (#44)
 - Reference image (View › Reference Image, #184)
 - Water layers (the Water tool's All layers / Layer, #14)
+- The coast while the camera moves: the foam line's shimmer (#747, probe `coast-foam`)
+- The coast in flight on a real GPU: the sea's depth (#747, probe `coast-flight`, `PROBE_GPU=1`)
+- The sea past the map's edge (#748, probe `sea-edge`)
 - Baked shadows: bake, paint, save and export (B-057, #16)
-- The unknown state of liquids and chunk data across a save (#525, probe `unknown-flags`)
+- The .wmap snapshot round trip and every readable version (#431)
+- The unknown state of holes, liquids and chunk data across a save (#525, #644, #663, probe `unknown-flags`)
 - Walkable ground: the navmesh view and the path test (#175), and the server's mmaps (#240)
+- The world view: streamed tiles and Edit Here (#15, probe `world-view`), its minimap (probe `world-minimap`), Detail info in it (probe `world-detail`), its own map's ID (probe `world-map-id`, #754), Launch and Copy Teleport in it (probe `world-teleport`, #756), and a flight through it (probe `perf-world-flight`, #742)
 
 ### Tools and placing models (`docs/tests/tools.md`)
 
 - Brush size controls (Photoshop-style)
 - Scripted brush strokes
+- Every tool's stroke is one undo step (#438, `tests/toolUndo.test.ts`; the gizmo's drags, #555, `tests/gizmoDrag.test.ts`)
 - Vertex mode undo and keys on a focused control (#127)
 - Gizmo drags (spin ring, height arrow, scale knob) without a mouse
 - Place tool keys (preview height and offset)
 - Tilting by hand (Z+scroll, #344)
+- Undoing a placement with the cursor over it (#719, probe `place-undo`)
+- Placing a creature or game object: the preview's size (#672)
 - Placement tilt (the client's rotation order, #149)
 - Doodad brush (scatter models by weight)
 - Spawn brush (the Doodad tool's Creatures mode, #171)
@@ -568,14 +730,21 @@ the same scene, the report before and after.
 
 - Session restore (reopening the last tabs at start)
 - Autosave and recovery (#177)
+- Folder setup dialog at start (#689)
 - The desktop window itself (closing with unsaved maps, #188)
+- A long right-drag turn on Windows never stops (#724)
 - Hover previews in tile grids (no gap between tiles)
 - Thumbnail loading order (asset browser grids)
 - Asset browser tabs remember their place (#123)
+- The virtualised tile grids (#578)
+- Names under the tiles (#655)
+- The same header on every tab (#651)
 - Model sets (the asset browser's Sets tab, #124)
 - Menu heights (#122)
 - Dock panel (Layers) and the Inspector
 - Hide panels (Tab)
+- Hide the dock (#653)
+- Toolbar on the right (#654)
 - Tool hints
 - Options bar overflow (More, #254)
 - Help window
@@ -585,37 +754,50 @@ the same scene, the report before and after.
 - Saving bar (#343, probe `saving-bar`)
 - Preview window (#197)
 - Previews draw only while something moves (#589)
+- Moving the view up and down in the previews (#662)
+- Camera views (#750, probe `camera-views`)
 - Top-down view (U)
 - Log window (and the session log file, #319, probe `session-log`)
 - Minimap window (M)
 - Projects (#48)
 - Start dialog: opening an instance (#222, #271, probe `instance-open`)
 - Accessibility (#354)
-- Dialog focus (#369, probe `dialog-focus`)
+- Dialog focus and Esc (#369, #573, probe `dialog-focus`)
+- Confirm dialog (#581, probe `confirm-dialog`)
 - Selected state for assistive tech (#373, probe `aria-state`)
 - Menu keys (#370, probe `menu-keys`)
+- Copy id (#681)
+- Shortcut table (#583, probe `shortcut-table`)
+- Hotkey Manager (#396, probe `hotkey-manager`)
 - Interface size (#372, probe `ui-scale`)
 
 ### Creatures, objects and the server database (`docs/tests/spawns.md`)
 
+- Spawn save: the edit list (#199, #432)
+- Spawn actions: new guids and pool entries (#557)
 - Gear picker (a spawn's main hand, off hand and ranged items)
 - Spawn tabs of the asset browser (Creatures, NPCs, Objects)
+- Sorting the creature tabs by level (#659)
+- Spawns on cave and dungeon floors (#660)
 - Game object editor: turning a spawn into another object, pools (#136)
 - Game object editor: Find object, with no spawn (#351)
 - Game object editor: Contents, Make it a chest, respawn (#220)
 - Game object editor: Display, picking a display from thumbnails (#230)
+- Game object editor: Sounds, a display's sound slots (#674)
 - Tilted game objects (#229)
 - Names over spawns (#125)
 - Right-click near the selected creature (#205)
 - Formations and spawn pools (#172)
 - Creature path editing on the map (#138)
+- A spawn's scripts on the This spawn tab (#137, probe `spawn-scripts`)
 - World event spawns (#143)
 - Creature editor: Looks opens on the creature's display (#206)
 - Creature editor: Shop tab (npc_vendor, #145)
 - Creature editor: Spells tab (creature_spells, #243)
-- Portals and area triggers (#141, #18; Teleport to destination #306, spawn teleports #308, probe `teleport-trigger`)
+- Portals and area triggers (#141, #18; Teleport to destination #306, spawn teleports #308, probe `teleport-trigger`; layout #718, probe `portals-fit`)
 - Flight paths (#180, probe `flight-paths`)
 - Creatures workspace and the new-creature guide (#132)
+- The database editors' shared frame (#576, unit `templateEditor.test.ts`)
 - Quest editor (#259)
 - Game object quests (#293)
 - Name colours by reaction (#134)
@@ -630,16 +812,36 @@ the same scene, the report before and after.
 - Play here: move the character in the world (#13)
 - Benilla launcher: nothing on screen until the world (benilla-launcher)
 - The game's template cache after an editor's Save (#234)
+- A new world's tiles on the 64×64 grid (#46, probe `new-world-tiles`)
 - Minimap tiles for the client (B-129, #17)
-- Server map extraction for one map (Publish, #174)
+- Server map extraction for one map (Publish, #174; nothing closed or started, #661)
+- Movement maps on compile (#173)
 - Compile to Client, Server, All and Launch's check for uncompiled edits (#214; probe `compile-launch`)
 - Compile to Server and Compile All save the spawn edits (#342; probe `compile-spawns`)
 - Compile keeps the client's alpha where nothing was painted (#526; probe `compile-alpha`)
+- Restore the Client's Paint (#645; probe `restore-paint`)
 - Added models get unique IDs across the map (#491)
 - Border models in every tile that lists them (#646)
 - Border models in the tiles outside the block (#647)
 - A map's own loading screen (Map Properties › Picture…, #218)
 - World map of a zone (World › World Map, #181; exploration overlays, #219)
-- Icons from PNG files and back (#364, probe `icons`)
+- Icons from PNG files and back, and the Icons tool (#364, #683, probe `icons`)
+- Icons beside item, spell and class names (#682, probe `editor-icons`)
+- Money as gold, silver and copper (#679, probe `money-fields`)
+- The creature editor's faction, family, race, AI, mount and mask pickers (#699, probe `creature-pickers`)
+- The game object editor's faction, cursor and data column pickers (#702, probe `object-pickers`)
+- The item editor's set, lock, page, enchantment, disenchant, map, category and honor rank pickers (#701, probe `item-pickers`)
+- The creature editor's gossip, vendor, trainer, equipment, loot and spell list pickers, and the Messages tab's menu, script, map point and condition (#700, probe `creature-list-pickers`)
+- The spell editor's tick lists, selects and pickers (#703, probe `spell-pickers`)
+- The quest editor's map, mail, condition, script, exclusive group, reputation and spillover pickers (#704, probe `quest-pickers`)
+- The zone flags and liquid, spawn display, ghost map, flight mount and creature spell target pickers (#705, probe `id-pickers`)
 - The asset server across a patch write (#471, probe `patch-cache`)
+- The binary replies against their parsers (#520, the wire fixtures)
+- The format constants and the axis swap on both sides (#538, the format fixture)
 - The cost of a write into Meld's patch (#476, `BenchmarkInstallPatch`)
+
+### Scripting (`docs/tests/scripting.md`)
+
+- Lua scripts: the API, undo and the Scripts window (#28, probe `lua-script`)
+- Script brushes, noise and images (#29, probe `script-brush`)
+- Chunks, texture layers, holes, zones and water (#760, probe `lua-chunks`)

@@ -37,11 +37,21 @@ const themes: [string, string][] = [
 for (const [name, selector] of themes) {
 	test(`${name} theme: text tokens reach 4.5:1 on every panel`, () => {
 		const t = tokens(selector)
-		for (const fg of ['text', 'text-dim', 'accent-text', 'danger-text']) {
+		for (const fg of ['text', 'text-dim', 'accent-text', 'danger-text', 'ok', 'warn', 'bad']) {
 			for (const bg of ['bg', 'panel', 'panel-2', 'panel-3']) {
 				assert.ok(t[fg] && t[bg], `${fg} or ${bg} missing`)
 				const r = ratio(t[fg], t[bg])
 				assert.ok(r >= 4.5, `${name} --${fg} on --${bg} is ${r.toFixed(2)}`)
+			}
+		}
+	})
+	// The dark theme keeps the game's own colours (the blue and purple are below 4.5:1 there, as in the game).
+	test(`${name} theme: item quality names reach 4.5:1 on the panels they sit on (#708)`, { skip: name === 'dark' }, () => {
+		const t = tokens(selector)
+		for (let q = 0; q <= 6; q++) {
+			for (const bg of ['bg', 'panel', 'panel-2']) {
+				const r = ratio(t[`q${q}`], t[bg])
+				assert.ok(r >= 4.5, `${name} --q${q} on --${bg} is ${r.toFixed(2)}`)
 			}
 		}
 	})
@@ -50,3 +60,39 @@ for (const [name, selector] of themes) {
 		assert.ok(ratio(t['accent-ink'] ?? '#ffffff', t.accent) >= 4.5)
 	})
 }
+
+// No colour literal in a component's styles (#579): it would escape the light theme and this test.
+// Allowed: the debug overlay, the SVG map strokes, and the game's own colours (item tooltip, quality
+// text), which stay as the client draws them on any theme.
+import { readdirSync } from 'node:fs'
+
+const allowed = new Set([
+	'DebugOverlay.svelte',
+	'MapPicker.svelte',
+	'MinimapWindow.svelte',
+	'MinimapView.svelte',
+	'ItemTooltipBox.svelte',
+	'FlightPathsWindow.svelte',
+	'EquipBonuses.svelte',
+	'WorldMapDialog.svelte',
+	// Dark overlays over the 3D view, and the spell editor's game-style tooltip: dark in both themes.
+	'PerfOverlay.svelte',
+	'Viewport.svelte',
+	'SpellEditor.svelte',
+])
+
+test('component styles use app.css tokens, not colour literals', () => {
+	const dir = new URL('../src/components/', import.meta.url)
+	const bad: string[] = []
+	for (const f of readdirSync(dir)) {
+		if (!f.endsWith('.svelte') || allowed.has(f)) continue
+		const src = readFileSync(new URL(f, dir), 'utf8')
+		for (const m of src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)) {
+			// CSS comments may name an issue such as (#718), which is not a colour.
+			for (const line of m[1].replace(/\/\*[\s\S]*?\*\//g, '').split(/\r?\n/)) {
+				if (/#[0-9a-fA-F]{3,8}\b/.test(line.replace(/var\([^)]*\)/g, ''))) bad.push(`${f}: ${line.trim()}`)
+			}
+		}
+	}
+	assert.deepEqual(bad, [])
+})

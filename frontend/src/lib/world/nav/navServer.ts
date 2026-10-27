@@ -7,9 +7,10 @@
 
 import { AREA_GROUND, AREA_MAGMA, AREA_SLIME, AREA_STEEP, AREA_WATER, AREA_WATER_TRANSITION, NAV_GROUND, NAV_MAGMA, NAV_SLIME, NAV_STEEP, NAV_WATER } from './navBuild'
 
-/** A client tile's side (yd), and the world's centre from its corner. */
-export const ADT_YARDS = 1600 / 3
-const ZERO_POINT = 32 * ADT_YARDS
+import { TILE_YARDS as ADT_YARDS, ZERO_POINT } from '../../wow/format'
+
+/** A client tile's side (yd) (lib/wow/format.ts TILE_YARDS). */
+export { ADT_YARDS }
 
 /** The server's navmesh params (its .mmap) and one tile's Detour data, as /wow/navtile sends them. */
 export interface ServerTile {
@@ -60,7 +61,12 @@ export function detourSurface(data: Uint8Array): { tris: Float32Array; areas: Ui
 	const v = new DataView(data.buffer, data.byteOffset, data.byteLength)
 	if (data.byteLength < 100 || v.getUint32(0, true) !== 0x444e4156) throw new Error('not a Detour tile')
 	const count = (i: number) => v.getInt32(24 + i * 4, true)
-	const polyCount = count(0), vertCount = count(1), linkCount = count(2), detailMeshCount = count(3), detailVertCount = count(4), detailTriCount = count(5)
+	const polyCount = count(0),
+		vertCount = count(1),
+		linkCount = count(2),
+		detailMeshCount = count(3),
+		detailVertCount = count(4),
+		detailTriCount = count(5)
 	const vertsAt = 100
 	const polysAt = vertsAt + align4(12 * vertCount)
 	const meshesAt = polysAt + align4(32 * polyCount) + align4(12 * linkCount)

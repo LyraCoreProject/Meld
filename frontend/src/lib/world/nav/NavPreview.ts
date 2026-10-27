@@ -13,6 +13,7 @@ import * as THREE from 'three'
 import type * as RecastModule from 'recast-navigation'
 import type { NavMesh, NavMeshQuery, Vector3 } from 'recast-navigation'
 import { fetchCollision, fetchNavTile } from '../../wow/api'
+import { LoadCache } from '../../wow/loadCache'
 import { isHelper } from '../../models/helpers'
 import type { ObjectLayer } from '../ObjectLayer'
 import type { Terrain } from '../../terrain/Terrain'
@@ -39,6 +40,7 @@ import { buildInWorker, navWorkerRoom, navWorkersReady, stopNavWorkers } from '.
 import { TileGatherer, adtHeightSpan, placeFaces, type ModelLiquid, type PlacedCollision } from './navGeometry'
 import { NavLiquids } from './navLiquids'
 import { ADT_YARDS, detourSurface, navPoint, parseNavTile } from './navServer'
+import { ZERO_POINT } from '../../wow/format'
 
 /** How far around the camera's target tiles are built (yd), and how far they are kept. */
 export const RANGE = 160
@@ -158,9 +160,8 @@ export class NavPreview {
 	private tiles = new Map<number, NavTile>()
 	private queue: NavTile[] = []
 	/** Collision faces (and a WMO's liquids) by model type: null while loading or when the model has none. */
-	private collisions = new Map<string, ModelCollision | null>()
-	private pending = 0
-	private loaded = 0
+	/** Each model type's collision faces (#515: a failure is warned, counted and retried; the Engine sets `onFail`). */
+	readonly collisions = new LoadCache<ModelCollision>('model collision', fetchCollision)
 	private placed = new Map<number, Placed>()
 	private placedList: PlacedCollision[] = []
 	/** Each client tile's height span (adtHeightSpan) by tile, for the current build. */
@@ -184,7 +185,7 @@ export class NavPreview {
 	private stamp = 0
 	/** The tile the focus was last in; in server mode the focus itself (yd from the map's corner). */
 	private focusTile = { x: NaN, z: NaN }
-	private m =new THREE.Matrix4()
+	private m = new THREE.Matrix4()
 	private material = new THREE.MeshBasicMaterial({
 		vertexColors: true,
 		transparent: true,
@@ -219,6 +220,9 @@ export class NavPreview {
 		this.group.name = 'walkable ground'
 		this.serverGroup.name = "the server's navmesh"
 		this.serverGroup.matrixAutoUpdate = false
+		// Settling from the faces' arrival (or failure), not from the next frame's look at the
+		// signature, so `counts` never shows the tiles done between the two.
+		this.collisions.onSettle = () => (this.dirty = true)
 	}
 
 	/** Whether the view shows the server's own tiles (#240). */
@@ -228,8 +232,8 @@ export class NavPreview {
 
 	/**
 	 * For the status bar and the probes: the tiles around the target, how many are built for the
-	 * ground and models as they are, whether collision (or the WASM) is still loading, and whether a
-	 * change waits to settle.
+	 * ground and models as they are, whether collision (or the WASM) is still loading, whether a
+	 * change waits to settle, and how many models' collision failed to load (#515).
 	 */
 	get counts() {
 		let done = 0
@@ -242,7 +246,7 @@ export class NavPreview {
 			return { done, total: this.serverTiles.size, loading: this.serverPending + (this.r ? 0 : 1), settling: false, missing }
 		}
 		for (const t of this.tiles.values()) if (t.stamp === this.stamp) done++
-		return { done, total: this.tiles.size, loading: this.pending + (this.r ? 0 : 1), settling: this.dirty, missing, builds: this.builds }
+		return { done, total: this.tiles.size, loading: this.collisions.loading + (this.r ? 0 : 1), settling: this.dirty, missing, builds: this.builds, failed: this.collisions.failed }
 	}
 
 	/**
@@ -277,7 +281,7 @@ export class NavPreview {
 		if (terrain.innerPending) return
 		const sig = `${liquids.version}|${sea}|${!!terrain.innerLift}`
 		const groundSig = `${terrain.heightVersion}|${terrain.holesVersion}`
-		const modelSig = `${objects.version}|${this.loaded}`
+		const modelSig = `${objects.version}|${this.collisions.settled}`
 		if (sig !== this.signature || groundSig !== this.groundSignature || modelSig !== this.modelSignature) {
 			// A change to the models (#509) or the ground's heights and holes (#620) builds again only the
 			// tiles it touches; the liquids, the sea or the client's inner heights rebuild them all.
@@ -311,7 +315,7 @@ export class NavPreview {
 		}
 		this.followFocus(focus)
 		// Wait for the models' faces, and for a change to settle, so no tile is built twice.
-		if (this.pending > 0 || this.dirty) return
+		if (this.collisions.loading > 0 || this.dirty) return
 		// The workers build (#508) and the budget pays only for gathering; without them the builds run here.
 		const workers = navWorkersReady()
 		const t0 = performance.now()
@@ -347,7 +351,7 @@ export class NavPreview {
 			this.nav = new r.NavMesh()
 			this.group.add(this.serverGroup)
 			const s = this.server
-			this.serverGroup.matrix.makeScale(-1, 1, -1).setPosition(32 * ADT_YARDS - s.tileX * ADT_YARDS, 0, 32 * ADT_YARDS - s.tileY * ADT_YARDS)
+			this.serverGroup.matrix.makeScale(-1, 1, -1).setPosition(ZERO_POINT - s.tileX * ADT_YARDS, 0, ZERO_POINT - s.tileY * ADT_YARDS)
 			this.serverGroup.matrixWorldNeedsUpdate = true
 			return
 		}
@@ -487,23 +491,12 @@ export class NavPreview {
 		}
 	}
 
-	/** A model type's collision faces, their groups and its liquids, fetched on first ask (null until they arrive). */
+	/**
+	 * A model type's collision faces, their groups and its liquids, fetched on first ask (null until
+	 * they arrive, and after they failed: #515, warned, counted in `counts.failed` and retried after RETRY_MS).
+	 */
 	private collision(type: string): ModelCollision | null {
-		const got = this.collisions.get(type)
-		if (got !== undefined) return got
-		this.collisions.set(type, null)
-		this.pending++
-		fetchCollision(type.slice(type.indexOf(':') + 1))
-			.then((f) => this.collisions.set(type, f))
-			.catch(() => {})
-			.finally(() => {
-				this.pending--
-				this.loaded++
-				// Settling from now, not from the next frame's look at the signature, so `counts` never
-				// shows the tiles done between the faces' arrival and that frame.
-				this.dirty = true
-			})
-		return null
+		return this.collisions.get(type, type.slice(type.indexOf(':') + 1))
 	}
 
 	/** Adds the tiles within RANGE of the focus and drops those past KEEP, when the focus enters another tile. */
@@ -786,10 +779,7 @@ export class NavPreview {
 			const w = this.toNav(v)
 			return new THREE.Vector3(w.x, w.y + 0.3, w.z)
 		})
-		const line = new THREE.Line(
-			new THREE.BufferGeometry().setFromPoints(pts),
-			new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true }),
-		)
+		const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true }))
 		line.renderOrder = 6
 		this.pathLine = line
 		this.group.add(line)

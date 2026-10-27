@@ -3,6 +3,7 @@ package vmangos
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -25,16 +26,15 @@ type SpawnEdit struct {
 
 // serverSpawn moves a region spawn back to the server's coordinates (see regionSpawn) on map mapID.
 func serverSpawn(w WorldSpawn, mapID, x, y int) Spawn {
-	t := float64(adt.TileSize)
-	zp := float64(adt.ZeroPoint)
+	sx, sy := adt.ToServer(float64(w.X), float64(w.Z), x, y)
 	s := Spawn{
 		Kind:           Creature,
 		GUID:           w.GUID,
 		Entry:          w.Entry,
 		Name:           w.Name,
 		Map:            mapID,
-		X:              zp - float64(w.Z) - float64(y)*t,
-		Y:              zp - float64(w.X) - float64(x)*t,
+		X:              sx,
+		Y:              sy,
 		Z:              float64(w.Y),
 		O:              float64(w.Orientation),
 		Scale:          float64(w.Scale),
@@ -70,9 +70,10 @@ func serverSpawn(w WorldSpawn, mapID, x, y int) Spawn {
 		}
 	}
 	for _, p := range w.Waypoints {
+		px, py := adt.ToServer(float64(p.X), float64(p.Z), x, y)
 		s.Path = append(s.Path, PathPoint{
-			X:              zp - float64(p.Z) - float64(y)*t,
-			Y:              zp - float64(p.X) - float64(x)*t,
+			X:              px,
+			Y:              py,
 			Z:              float64(p.Y),
 			O:              float64(p.Orientation),
 			WaitMs:         p.WaitMs,
@@ -106,18 +107,30 @@ func SpawnSQL(serverRoot, mapName string, x, y, size int, edits []SpawnEdit, now
 }
 
 // runScript runs an SQL script against the world database through mariadb's input, one
-// transaction, since a script of many edits is too long for a command line. It's a variable so
-// tests can catch the script.
-var runScript = func(db worldDB, script string) error {
+// transaction, since a script of many edits is too long for a command line. Without --force,
+// mariadb stops at the first failing statement, so COMMIT is never reached and the error comes back.
+func runScript(db worldDB, script string) error {
 	args := db.args("")
 	args = args[:len(args)-2] // no -e: the script comes on stdin
+	return pipeMariadb(args, db.env(), transactionScript(script))
+}
+
+// transactionScript wraps a script in the one transaction runScript runs it in.
+func transactionScript(script string) string {
+	return "START TRANSACTION;\n" + script + "\nCOMMIT;\n"
+}
+
+// pipeMariadb runs the mariadb client with args, env added to its environment, and feeds it input.
+// It's a variable so tests can catch the script runScript sends, and fail it.
+var pipeMariadb = func(args, env []string, input string) error {
 	cmd := exec.Command("mariadb", args...)
+	cmd.Env = append(os.Environ(), env...)
 	hideConsole(cmd)
-	cmd.Stdin = strings.NewReader("START TRANSACTION;\n" + script + "\nCOMMIT;\n")
+	cmd.Stdin = strings.NewReader(input)
 	var errOut bytes.Buffer
 	cmd.Stderr = &errOut
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("mariadb: %w: %s", err, strings.TrimSpace(errOut.String()))
+		return fmt.Errorf("mariadb: %w: %s", err, mariadbError(errOut.String()))
 	}
 	return nil
 }

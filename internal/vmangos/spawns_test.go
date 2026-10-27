@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"math"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 
 	"Meld/internal/adt"
+	"Meld/internal/testclient"
 	"Meld/internal/wow"
 )
 
@@ -47,6 +47,18 @@ func TestParseSpawnRows(t *testing.T) {
 
 // A tilted game object (#229), the Sunken Chest of guid 42485: its tilt is read, and written back
 // unchanged while its facing is, or turned about Z by the change of facing.
+// A backslash in a creature's name comes back as one backslash, not mariadb's escaped two (#478).
+func TestParseSpawnRowsUnescapesNames(t *testing.T) {
+	raw := []byte("123\t45\t" + `Back\\slash` + "\t" + `Sub\tname` + "\t1\t2\t14\t0\t0\t1\t-100.5\t-200\t30\t1.5\t300\t880\t1.25\t0\t7\t1\t233\t1\t1\t5.5\t420\t0\t0\t0\t0\n")
+	rows, err := parseSpawnRows(raw, "creature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Name != `Back\slash` || rows[0].Subname != "Sub\tname" {
+		t.Fatalf("rows %+v", rows)
+	}
+}
+
 func TestTiltedObjectKeepsItsTilt(t *testing.T) {
 	raw := []byte("42485\t32\tSunken Chest\t\t0\t0\t0\t0\t0\t3\t-9366.48\t-2472.26\t17.0271\t-2.28118\t300\t0\t1\t0\t0\t0\t0\t0\t0\t0\t300" +
 		"\t-0.118706\t-0.071149\t0.899253\t-0.414959\n")
@@ -124,11 +136,8 @@ func TestRegionSpawnConversion(t *testing.T) {
 // from the client. It needs VMANGOS_DIR set to the server folder, with its database running, and
 // WOW_DIR set to the client.
 func TestReadSpawnsLive(t *testing.T) {
-	dir := os.Getenv("VMANGOS_DIR")
-	clientDir := os.Getenv("WOW_DIR")
-	if dir == "" || clientDir == "" {
-		t.Skip("VMANGOS_DIR or WOW_DIR not set")
-	}
+	dir := testclient.ServerDir(t)
+	clientDir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(clientDir)
 	if err != nil {
 		t.Fatal(err)
@@ -156,11 +165,11 @@ func TestReadSpawnsLive(t *testing.T) {
 // TestSpawnModelsLoad checks that the models the spawns name load through the editor's model
 // loader, for the same live block. It needs VMANGOS_DIR and WOW_DIR.
 func TestSpawnModelsLoad(t *testing.T) {
-	dir := os.Getenv("VMANGOS_DIR")
-	clientDir := os.Getenv("WOW_DIR")
-	if dir == "" || clientDir == "" {
-		t.Skip("VMANGOS_DIR or WOW_DIR not set")
+	if testing.Short() {
+		t.Skip("heavy client scan; run make test-full")
 	}
+	dir := testclient.ServerDir(t)
+	clientDir := testclient.DataDir(t)
 	dataDir, err := wow.ResolveDataDir(clientDir)
 	if err != nil {
 		t.Fatal(err)

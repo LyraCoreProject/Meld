@@ -1,20 +1,7 @@
 import * as THREE from 'three'
 import { compressedTexturesOn, fetchImage, fetchTextureDXT, listAssets, textureAnisotropy, type RawImage } from '../wow/api'
 import { applySheen, sheenPath } from './sheen'
-import {
-	LAYER_BYTES,
-	LEVEL_BYTES,
-	LEVEL_OFFSET,
-	LEVEL_SIDE,
-	RES,
-	blockResamplable,
-	chainAlpha,
-	chainColour,
-	dxtLevels,
-	encodeAlphaChain,
-	encodeColourChain,
-	solidLayer,
-} from './paletteBlocks'
+import { LAYER_BYTES, LEVEL_BYTES, LEVEL_OFFSET, LEVEL_SIDE, RES, blockResamplable, chainAlpha, chainColour, dxtLevels, encodeAlphaChain, encodeColourChain, solidLayer } from './paletteBlocks'
 
 // The map's texture palette as one array texture: layer i is palette entry i. Each entry is a WoW
 // tileset path, or a '#rrggbb' colour that stands in for a texture while none is set. WoW
@@ -118,6 +105,20 @@ const RGBA_LEVEL = [PALETTE_RES * PALETTE_RES * 4]
 /** Bytes of an RGBA layer on the GPU with the mips it makes. */
 const RGBA_GPU_BYTES = LEVEL_SIDE.reduce((a, s) => a + s * s * 4, 0)
 
+let failHandler: ((path: string, err: unknown) => void) | null = null
+/** The palettes holding a texture that failed to load, so a reconnect can ask for those again (#544). */
+const failedPalettes = new Set<PaletteArray>()
+
+/** Called once for each palette texture that fails to load (the Engine says so in the status line and the log). */
+export function setPaletteFailHandler(fn: ((path: string, err: unknown) => void) | null) {
+	failHandler = fn
+}
+
+/** Loads again every palette texture that failed, once the client is back. */
+export function retryFailedPalettes() {
+	failedPalettes.forEach((p) => p.retryFailed())
+}
+
 export class PaletteArray {
 	/** The array texture the terrain shader samples. Replaced when the palette outgrows it. */
 	texture: THREE.DataArrayTexture | THREE.CompressedArrayTexture
@@ -127,6 +128,8 @@ export class PaletteArray {
 	/** Each entry's layer bytes loaded so far (RGBA level 0, or DXT3 every level), by entry. */
 	private loaded = new Map<string, Uint8Array>()
 	private loading = new Set<string>()
+	/** Paths whose load failed: reported once, left grey until retryFailed. */
+	private failed = new Set<string>()
 	/** A layer's bytes in each uploaded level. */
 	private readonly levelBytes: readonly number[]
 	/** Where each level starts in a layer's bytes. */
@@ -171,6 +174,30 @@ export class PaletteArray {
 		}
 		paths.forEach((p, i) => this.fill(i, p))
 		this.texture.needsUpdate = true
+	}
+
+	/**
+	 * Sets entry `i` alone, growing the array as `set` does, and leaves the other layers as they are
+	 * (`set` writes every layer again). The bytes of the path it replaces are let go of unless another
+	 * entry shows it. For a palette whose entries come and go, the world view's (world/worldPaint.ts).
+	 */
+	setEntry(i: number, path: string) {
+		const old = this.paths[i]
+		this.paths[i] = path
+		if (old && old !== path && !this.paths.includes(old)) this.loaded.delete(old)
+		const depth = depthFor(Math.max(1, this.paths.length))
+		if (depth !== this.texture.image.depth) {
+			this.texture.dispose()
+			this.texture = this.make(depth)
+			this.onReplace(this.texture)
+		}
+		// Only a write of its own uploads anything: a needsUpdate without a layer update sends every layer.
+		if (this.fill(i, path)) this.texture.needsUpdate = true
+	}
+
+	/** Whether `path`'s texture has loaded or failed, so its layer will not change again. */
+	settled(path: string): boolean {
+		return isColor(path) || this.loaded.has(path) || this.failed.has(path)
 	}
 
 	private make(depth: number): THREE.DataArrayTexture | THREE.CompressedArrayTexture {
@@ -223,31 +250,26 @@ export class PaletteArray {
 		if (!this.whole) this.texture.addLayerUpdate(layer)
 	}
 
-	private fill(layer: number, path: string) {
-		if (!path) return
+	/** Writes the layer of entry `path`, now when its bytes are at hand (true) or once they load. */
+	private fill(layer: number, path: string): boolean {
+		if (!path) return false
 		const px = this.loaded.get(path)
 		if (px) {
 			this.write(layer, px)
-			return
+			return true
 		}
 		if (isColor(path)) {
 			const [r, g, b] = hexRGB(path)
 			const c = this.compressed ? solidLayer(r, g, b) : solid(path)
 			this.loaded.set(path, c)
 			this.write(layer, c)
-			return
+			return true
 		}
-		if (this.loading.has(path)) return
+		if (this.loading.has(path) || this.failed.has(path)) return false
 		this.loading.add(path)
 		const layerBytes = this.compressed
-			? Promise.all([
-					fetchTextureDXT(path),
-					hasSheenTwin(path).then((has) => (has ? fetchTextureDXT(sheenPath(path)).catch(() => null) : null)),
-				]).then(([base, sheen]) => blockLayer(path, base, sheen))
-			: Promise.all([
-					fetchImage(path),
-					hasSheenTwin(path).then((has) => (has ? fetchImage(sheenPath(path)).then(resampled, () => null) : null)),
-				]).then(([img, mask]) => {
+			? Promise.all([fetchTextureDXT(path), hasSheenTwin(path).then((has) => (has ? fetchTextureDXT(sheenPath(path)).catch(() => null) : null))]).then(([base, sheen]) => blockLayer(path, base, sheen))
+			: Promise.all([fetchImage(path), hasSheenTwin(path).then((has) => (has ? fetchImage(sheenPath(path)).then(resampled, () => null) : null))]).then(([img, mask]) => {
 					const px = resampled(img)
 					applySheen(px, mask)
 					return px
@@ -256,19 +278,38 @@ export class PaletteArray {
 			.then((px) => {
 				this.loading.delete(path)
 				this.loaded.set(path, px)
-				// Every layer that shows this path gets it, whichever slot it sits in now.
+				// Every layer that shows this path gets it, whichever slot it sits in now; none may (an entry
+				// replaced while it loaded), and then nothing is sent.
+				let wrote = false
 				this.paths.forEach((p, i) => {
-					if (p === path) this.write(i, px)
+					if (p !== path) return
+					this.write(i, px)
+					wrote = true
 				})
-				this.texture.needsUpdate = true
+				if (wrote) this.texture.needsUpdate = true
 			})
-			.catch(() => {
+			.catch((err) => {
 				this.loading.delete(path)
-				// Keep the grey placeholder and drop the failed path from the cache so it can be retried.
+				// Keep the grey placeholder, say so once, and ask again when the client reconnects.
+				this.failed.add(path)
+				failedPalettes.add(this)
+				failHandler?.(path, err)
 			})
+		return false
+	}
+
+	/** Asks again for the textures that failed. */
+	retryFailed() {
+		const paths = [...this.failed]
+		this.failed.clear()
+		failedPalettes.delete(this)
+		this.paths.forEach((p, i) => {
+			if (paths.includes(p)) this.fill(i, p)
+		})
 	}
 
 	dispose() {
+		failedPalettes.delete(this)
 		this.texture.dispose()
 	}
 }

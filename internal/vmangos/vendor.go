@@ -42,6 +42,9 @@ type ItemRef struct {
 	Name      string `json:"name"`
 	Quality   int    `json:"quality"`
 	DisplayID int    `json:"displayId"`
+	// ItemLevel and RequiredLevel are filled in by SearchItems only.
+	ItemLevel     int `json:"itemLevel,omitempty"`
+	RequiredLevel int `json:"requiredLevel,omitempty"`
 }
 
 // itemNamesJoin joins each row's item to the newest patch of its item_template row, as `it`.
@@ -57,16 +60,8 @@ func vendorRowsSQL(table string, entry int) string {
 // parseVendorItems reads vendorRowsSQL's output.
 func parseVendorItems(raw []byte) []VendorItem {
 	var items []VendorItem
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\r\n"), "\n") {
-		f := strings.Split(strings.TrimRight(line, "\r"), "\t")
-		if len(f) != 8 {
-			continue
-		}
-		n := func(i int) int {
-			v, _ := strconv.Atoi(f[i])
-			return v
-		}
-		items = append(items, VendorItem{Item: n(0), Name: unescapeBatch(f[1]), Quality: n(2), DisplayID: n(3), MaxCount: n(4), IncrTime: n(5), ItemFlags: n(6), Condition: n(7)})
+	for _, f := range batchRows(raw, 8) {
+		items = append(items, VendorItem{Item: f.num(0), Name: f[1], Quality: f.num(2), DisplayID: f.num(3), MaxCount: f.num(4), IncrTime: f.num(5), ItemFlags: f.num(6), Condition: f.num(7)})
 	}
 	return items
 }
@@ -136,24 +131,17 @@ func SaveVendor(serverRoot string, entry int, items []VendorItem) (string, error
 	if err := ensureDatabase(db, serverRoot); err != nil {
 		return "", err
 	}
-	if len(items) > 0 {
-		ids := make([]string, len(items))
-		for i, it := range items {
-			ids[i] = strconv.Itoa(it.Item)
-		}
-		raw, err := runSQL(db, "SELECT DISTINCT `entry` FROM `item_template` WHERE `entry` IN ("+strings.Join(ids, ",")+")")
-		if err != nil {
-			return "", err
-		}
-		known := map[int]bool{}
-		for _, l := range strings.Fields(string(raw)) {
-			n, _ := strconv.Atoi(l)
-			known[n] = true
-		}
-		for _, it := range items {
-			if !known[it.Item] {
-				return "", fmt.Errorf("the world database has no item %d", it.Item)
-			}
+	ids := make([]int, len(items))
+	for i, it := range items {
+		ids[i] = it.Item
+	}
+	known, err := knownEntries(db, itemTable, ids)
+	if err != nil {
+		return "", err
+	}
+	for _, it := range items {
+		if !known[it.Item] {
+			return "", fmt.Errorf("the world database has no item %d", it.Item)
 		}
 	}
 	sql, err := vendorSQL(entry, items)
@@ -166,6 +154,42 @@ func SaveVendor(serverRoot string, entry int, items []VendorItem) (string, error
 // SearchItems lists the item templates whose name has text in it, or whose entry is text, by
 // name, at most limit of them.
 func SearchItems(serverRoot, text string, limit int) ([]ItemRef, error) {
+	return SearchItemsSorted(serverRoot, text, "name", false, limit)
+}
+
+// itemSorts maps the sort keys SearchItemsSorted takes to their item_template columns.
+var itemSorts = map[string]string{
+	"name":          "i.name",
+	"entry":         "i.entry",
+	"quality":       "i.quality",
+	"itemLevel":     "i.item_level",
+	"requiredLevel": "i.required_level",
+}
+
+// itemOrder builds SearchItemsSorted's ORDER BY clause from a whitelisted key (an unknown one
+// sorts by name), with the name and the entry breaking ties.
+func itemOrder(sort string, desc bool) string {
+	col, ok := itemSorts[sort]
+	if !ok {
+		col = "i.name"
+	}
+	dir := ""
+	if desc {
+		dir = " DESC"
+	}
+	order := col + dir
+	if col != "i.name" && col != "i.entry" {
+		order += ", i.name"
+	}
+	if col != "i.entry" {
+		order += ", i.entry"
+	}
+	return order
+}
+
+// SearchItemsSorted is SearchItems with the matches ordered by sort (a key of itemSorts) before
+// the limit, so a broad search gives the best or highest items, not only the first by name.
+func SearchItemsSorted(serverRoot, text, sort string, desc bool, limit int) ([]ItemRef, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil, nil
@@ -181,22 +205,15 @@ func SearchItems(serverRoot, text string, limit int) ([]ItemRef, error) {
 	if n, err := strconv.Atoi(text); err == nil {
 		match = fmt.Sprintf("(%s OR i.entry = %d)", match, n)
 	}
-	raw, err := runSQL(db, fmt.Sprintf("SELECT i.entry, i.name, i.quality, i.display_id FROM item_template i JOIN "+
+	raw, err := runSQL(db, fmt.Sprintf("SELECT i.entry, i.name, i.quality, i.display_id, i.item_level, i.required_level FROM item_template i JOIN "+
 		"(SELECT entry, MAX(patch) AS patch FROM item_template GROUP BY entry) n ON n.entry = i.entry AND n.patch = i.patch "+
-		"WHERE %s ORDER BY i.name, i.entry LIMIT %d", match, max(limit, 1)))
+		"WHERE %s ORDER BY %s LIMIT %d", match, itemOrder(sort, desc), max(limit, 1)))
 	if err != nil {
 		return nil, err
 	}
 	var out []ItemRef
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\r\n"), "\n") {
-		f := strings.Split(strings.TrimRight(line, "\r"), "\t")
-		if len(f) != 4 {
-			continue
-		}
-		e, _ := strconv.Atoi(f[0])
-		q, _ := strconv.Atoi(f[2])
-		d, _ := strconv.Atoi(f[3])
-		out = append(out, ItemRef{Entry: e, Name: unescapeBatch(f[1]), Quality: q, DisplayID: d})
+	for _, f := range batchRows(raw, 6) {
+		out = append(out, ItemRef{Entry: f.num(0), Name: f[1], Quality: f.num(2), DisplayID: f.num(3), ItemLevel: f.num(4), RequiredLevel: f.num(5)})
 	}
 	return out, nil
 }
@@ -204,54 +221,13 @@ func SearchItems(serverRoot, text string, limit int) ([]ItemRef, error) {
 // ReadItem reads item template entry's newest patch row, every column by name (the columns differ
 // between VMaNGOS versions), for the Shop tab's tooltips.
 func ReadItem(serverRoot string, entry int) (map[string]string, error) {
-	db, err := worldDatabase(serverRoot)
+	rec, err := ReadItemTemplate(serverRoot, entry)
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureDatabase(db, serverRoot); err != nil {
-		return nil, err
-	}
-	raw, err := runSQL(db, "SHOW COLUMNS FROM item_template")
-	if err != nil {
-		return nil, err
-	}
-	var names []string
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\r\n"), "\n") {
-		if f := strings.Split(line, "\t"); len(f) > 0 && f[0] != "" {
-			names = append(names, f[0])
-		}
-	}
-	if len(names) == 0 {
-		return nil, fmt.Errorf("the world database has no item_template")
-	}
-	quoted := make([]string, len(names))
-	for i, n := range names {
-		quoted[i] = "`" + n + "`"
-	}
-	raw, err = runSQL(db, fmt.Sprintf("SELECT %s FROM item_template WHERE entry = %d ORDER BY patch DESC LIMIT 1", strings.Join(quoted, ", "), entry))
-	if err != nil {
-		return nil, err
-	}
-	return parseItemRow(names, raw, entry)
-}
-
-// parseItemRow reads ReadItem's row: the values in the columns' order, a tab between them.
-func parseItemRow(names []string, raw []byte, entry int) (map[string]string, error) {
-	// Only the line end: empty last columns leave trailing tabs that are fields.
-	line := strings.TrimRight(string(raw), "\r\n")
-	f := strings.Split(line, "\t")
-	if line == "" || len(f) != len(names) {
-		return nil, fmt.Errorf("the world database has no item %d", entry)
-	}
-	out := make(map[string]string, len(names))
-	for i, n := range names {
-		v := f[i]
-		if v == "NULL" {
-			v = ""
-		}
-		out[n] = unescapeBatch(v)
-	}
-	return out, nil
+	rec.Values["entry"] = strconv.Itoa(rec.Entry)
+	rec.Values["patch"] = strconv.Itoa(rec.Patch)
+	return rec.Values, nil
 }
 
 // itemIcons is ItemDisplayInfo.dbc's icon name by display, read once per client data folder.
