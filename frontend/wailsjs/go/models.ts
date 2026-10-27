@@ -286,8 +286,8 @@ export namespace main {
 	export class LyraCoreInfo {
 	    url: string;
 	    database: string;
-	    shards: string;
 	    hasToken: boolean;
+	    session: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new LyraCoreInfo(source);
@@ -297,8 +297,8 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.url = source["url"];
 	        this.database = source["database"];
-	        this.shards = source["shards"];
 	        this.hasToken = source["hasToken"];
+	        this.session = source["session"];
 	    }
 	}
 	export class PrefabFile {
@@ -2739,6 +2739,7 @@ export namespace vmangos {
 	    changed: number;
 	    deleted: number;
 	    skipped: string[];
+	    live: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Result(source);
@@ -2751,6 +2752,7 @@ export namespace vmangos {
 	        this.changed = source["changed"];
 	        this.deleted = source["deleted"];
 	        this.skipped = source["skipped"];
+	        this.live = source["live"];
 	    }
 	}
 	export class SoundOption {

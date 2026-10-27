@@ -626,14 +626,15 @@ new icon) in Meld's patch only on Save or New spell.
 ## LyraCore spawns (SpacetimeDB)
 
 - Unit: `internal/stdb` (`TestSQLReadsRowsByColumn`: a u64 guid, a float, a string and a Timestamp read
-  by column, a missing column an error; `TestCallSendsArgsAsArray`), `internal/lyracore` (the shard map
-  routes maps, an instance-only entry is skipped; guids survive `LowGUID` and back and stay under 2^53).
-- Live: `LYRA_URL=http://127.0.0.1:3300 LYRA_TOKEN_FILE=<file with the owner token> WOW_DIR=<client>
-  go test ./internal/vmangos -run TestReadLyraSpawnsLive -v` reads Azeroth tile (32, 48), Northshire:
-  on 2026-10-22 308 spawns (235 monsters, 21 NPCs, 52 objects), all named and modelled, 16 with a
-  patrol. It needs the SSH tunnel to the realm's SpacetimeDB (docs/architecture/client.md, LyraCore).
+  by column, a missing column an error; `TestCallSendsArgsAsArray`), `internal/lyracore` (guids survive
+  `LowGUID` and back and stay under 2^53), `internal/vmangos` `TestLyraEdits*` (the operator SpawnEdits
+  a save sends: add, change, delete, a creature recreated under another entry, a patrol, the fields
+  LyraCore lacks, the call's limits).
+- Live: start the local realm (`./lyracore dev up` in LyraCore), then `LYRA_URL=http://127.0.0.1:3000
+  LYRA_TOKEN_FILE=<LyraCore>/.lyracore/native-owner-token WOW_DIR=<client> go test ./internal/vmangos -run
+  TestReadLyraSpawnsLive -v` reads Azeroth tile (32, 48), Northshire: on 2026-10-22 308 spawns (235
+  monsters, 21 NPCs, 52 objects), all named and modelled, 16 with a patrol.
+- In the app: `./lyracore editor` in LyraCore, open Northshire, move a creature, Save Spawns; the status
+  says "live now" and the creature stands at its new place in the game without a restart.
 - By hand with curl: `curl -H "Authorization: Bearer $T" --data "SELECT * FROM game_creature_spawn WHERE
-  map_id = 0 AND x > -9000 AND x < -8800 LIMIT 5" http://127.0.0.1:3300/v1/database/lyracore/sql`.
-- Trap: the realm spans several databases; Kalimdor (map 1) is in `lyracore-world-1` on this realm, not
-  in `lyracore` (whose `game_creature_spawn` has no map 1 rows). Pass `LYRA_SHARDS` (the gateway's
-  `LYRACORE_SHARD_MAP` from `/etc/lyracore/gateway.env`) to the live test to read other maps.
+  map_id = 0 AND x > -9000 AND x < -8800 LIMIT 5" http://127.0.0.1:3000/v1/database/lyracore/sql`.

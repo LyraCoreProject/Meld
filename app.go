@@ -65,10 +65,18 @@ type App struct {
 	sandboxTimer *time.Timer
 	sandboxReal  string
 	sandboxStamp sandbox.Stamp
+
+	// lyraSession is the realm `lyracore editor` started Meld with (app_lyracore.go); nil for none.
+	lyraSession *lyraSession
 }
 
 func NewApp() *App {
-	a := &App{wow: wow.NewClient(), cfg: config.Load()}
+	a := &App{wow: wow.NewClient(), cfg: config.Load(), lyraSession: lyraSessionFromEnv()}
+	// `lyracore editor`'s client folder, for this session: config.Update writes only the fields it
+	// changes, so it is not saved.
+	if p := strings.TrimSpace(os.Getenv(envWowPath)); p != "" {
+		a.cfg.WowPath = p
+	}
 	// The asset server previews an icon added while the game ran before the patch has it (#364).
 	a.wow.SetOverlay(a.clientOverlay)
 	// A patch write closes the client's archives for its rename only, and the asset server forgets
@@ -773,11 +781,7 @@ func (a *App) Areas() ([]vmangos.Area, error) {
 // tiles. It needs the VMaNGOS server folder, and the server's database running, or else a LyraCore
 // realm, whose SpacetimeDB it reads instead when one is set.
 func (a *App) LoadSpawns(mapName string, x, y, size int) ([]vmangos.WorldSpawn, error) {
-	if realm, err := a.lyraRealm(); err != nil || realm != nil {
-		if err != nil {
-			return nil, err
-		}
-		dataDir, err := a.clientDataDir()
+	if realm, dataDir, err := a.lyraRealmAndData(); err != nil || realm != nil {
 		if err != nil {
 			return nil, err
 		}
@@ -812,6 +816,17 @@ func (a *App) serverAndData() (string, string, error) {
 // SpawnLook dresses a creature display with an equipment and a pose, for a spawn whose display,
 // equipment, stand state, emote or sheath state was edited.
 func (a *App) SpawnLook(display, equipment, stand, emote, sheath int) (vmangos.LookResult, error) {
+	if realm, err := a.lyraRealm(); err != nil || realm != nil {
+		if err != nil {
+			return vmangos.LookResult{}, err
+		}
+		// A LyraCore realm has no equipment templates.
+		dataDir, err := a.clientDataDir()
+		if err != nil {
+			return vmangos.LookResult{}, err
+		}
+		return vmangos.CreatureLook("", dataDir, display, 0, stand, emote, sheath)
+	}
 	server, dataDir, err := a.serverAndData()
 	if err != nil {
 		return vmangos.LookResult{}, err
@@ -869,6 +884,12 @@ func (a *App) SpawnEmotes() ([]vmangos.Emote, error) {
 // SearchCreatures lists up to 100 creature templates of the world database whose name has text
 // in it (or whose entry it is), for placing new creatures.
 func (a *App) SearchCreatures(text string) ([]vmangos.CreatureTemplate, error) {
+	if realm, dataDir, err := a.lyraRealmAndData(); err != nil || realm != nil {
+		if err != nil {
+			return nil, err
+		}
+		return vmangos.SearchLyraCreatures(realm, dataDir, text, 100)
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return nil, err
@@ -878,6 +899,12 @@ func (a *App) SearchCreatures(text string) ([]vmangos.CreatureTemplate, error) {
 
 // ListCreatureTemplates lists every creature template of the world database, dressed for a thumbnail.
 func (a *App) ListCreatureTemplates() ([]vmangos.CreatureTemplate, error) {
+	if realm, dataDir, err := a.lyraRealmAndData(); err != nil || realm != nil {
+		if err != nil {
+			return nil, err
+		}
+		return vmangos.ListLyraCreatureTemplates(realm, dataDir)
+	}
 	server, dataDir, err := a.serverAndData()
 	if err != nil {
 		return nil, err
@@ -887,6 +914,12 @@ func (a *App) ListCreatureTemplates() ([]vmangos.CreatureTemplate, error) {
 
 // ListObjectTemplates lists every game object template of the world database with its model.
 func (a *App) ListObjectTemplates() ([]vmangos.ObjectTemplate, error) {
+	if realm, dataDir, err := a.lyraRealmAndData(); err != nil || realm != nil {
+		if err != nil {
+			return nil, err
+		}
+		return vmangos.ListLyraObjectTemplates(realm, dataDir)
+	}
 	server, dataDir, err := a.serverAndData()
 	if err != nil {
 		return nil, err
@@ -978,6 +1011,9 @@ func (a *App) SpawnTeleports(kind string, entry, guid int) ([]vmangos.SpawnTelep
 
 // NextObjectGUID is the first free game object guid of the world database, for placed objects.
 func (a *App) NextObjectGUID() (int, error) {
+	if realm, err := a.lyraRealm(); err != nil || realm != nil {
+		return lyraPlaceholderGUID, err
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return 0, err
@@ -998,6 +1034,9 @@ func (a *App) NextPoolEntry() (int, error) {
 // NextCreatureGUID is the first creature guid the world database doesn't use yet, for creatures
 // placed in the editor.
 func (a *App) NextCreatureGUID() (int, error) {
+	if realm, err := a.lyraRealm(); err != nil || realm != nil {
+		return lyraPlaceholderGUID, err
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return 0, err
@@ -1008,6 +1047,10 @@ func (a *App) NextCreatureGUID() (int, error) {
 // CheckSpawnIDs tells File › Check Map what the world database has under the unsaved spawns' guids
 // and entries (#195).
 func (a *App) CheckSpawnIDs(q vmangos.SpawnIDQuery) (vmangos.SpawnIDReport, error) {
+	// A LyraCore realm gives new spawns their guids, so no unsaved guid can clash.
+	if realm, err := a.lyraRealm(); err != nil || realm != nil {
+		return vmangos.SpawnIDReport{}, err
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return vmangos.SpawnIDReport{}, err
@@ -1793,6 +1836,12 @@ func (a *App) ModelAnimations(model string) ([]vmangos.AnimInfo, error) {
 
 // SpawnEditSQL turns a region's spawn edits into SQL for the world database, without running it.
 func (a *App) SpawnEditSQL(mapName string, x, y, size int, edits []vmangos.SpawnEdit) (vmangos.Result, error) {
+	if realm, err := a.lyraRealm(); err != nil || realm != nil {
+		if err != nil {
+			return vmangos.Result{}, err
+		}
+		return vmangos.Result{}, errors.New("a LyraCore realm has no SQL to export; Save Spawns writes the edits into it")
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return vmangos.Result{}, err
@@ -1800,9 +1849,18 @@ func (a *App) SpawnEditSQL(mapName string, x, y, size int, edits []vmangos.Spawn
 	return vmangos.SpawnSQL(server, mapName, x, y, size, edits, time.Now())
 }
 
-// ApplySpawnEdits writes a region's spawn edits into the world database. The SQL run is kept in
-// <user cache>/Meld/spawn-sql first, so what changed can be looked up (or undone by hand).
+// ApplySpawnEdits writes a region's spawn edits into the world database, or into the LyraCore
+// realm when one is set, which shows them at once. What was run (the SQL, or the realm's reducer
+// argument) is kept in <user cache>/Meld/spawn-sql, so what changed can be looked up.
 func (a *App) ApplySpawnEdits(mapName string, x, y, size int, edits []vmangos.SpawnEdit) (vmangos.Result, error) {
+	if realm, dataDir, err := a.lyraRealmAndData(); err != nil || realm != nil {
+		if err != nil {
+			return vmangos.Result{}, err
+		}
+		res, err := vmangos.ApplyLyraSpawnEdits(realm, dataDir, mapName, x, y, size, edits)
+		keepSpawnRecord(mapName, ".json", res.SQL)
+		return res, err
+	}
 	server, _, err := a.serverForWrite()
 	if err != nil {
 		return vmangos.Result{}, err
@@ -1815,13 +1873,21 @@ func (a *App) ApplySpawnEdits(mapName string, x, y, size int, edits []vmangos.Sp
 	if err != nil {
 		return res, err
 	}
+	keepSpawnRecord(mapName, ".sql", res.SQL)
+	return res, vmangos.ApplySQL(server, res.SQL)
+}
+
+// keepSpawnRecord keeps what a spawn save ran in <user cache>/Meld/spawn-sql; nothing for none.
+func keepSpawnRecord(mapName, ext, text string) {
+	if text == "" {
+		return
+	}
 	if cache, err := os.UserCacheDir(); err == nil {
 		dir := filepath.Join(cache, "Meld", "spawn-sql")
 		if os.MkdirAll(dir, 0o755) == nil {
-			_ = os.WriteFile(filepath.Join(dir, time.Now().Format("20060102-150405")+"-"+mapName+".sql"), []byte(res.SQL), 0o644)
+			_ = os.WriteFile(filepath.Join(dir, time.Now().Format("20060102-150405")+"-"+mapName+ext), []byte(text), 0o644)
 		}
 	}
-	return res, vmangos.ApplySQL(server, res.SQL)
 }
 
 // SaveSQLDialog asks where to save an SQL file. Returns "" if cancelled.

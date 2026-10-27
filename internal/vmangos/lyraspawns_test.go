@@ -23,7 +23,7 @@ func TestReadLyraSpawnsLive(t *testing.T) {
 		}
 		token = string(b)
 	}
-	realm, err := lyracore.Open(lyracore.Settings{URL: url, Token: token, Shards: os.Getenv("LYRA_SHARDS")})
+	realm, err := lyracore.Open(lyracore.Settings{URL: url, Token: token})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -471,31 +471,40 @@ Reading the client's assets, and the server's creatures and objects: looks, edit
 ## LyraCore realms (SpacetimeDB)
 
 [LyraCore](https://github.com/LyraCoreProject/LyraCore) is a 1.12.1 server whose whole world (spawns,
-templates, terrain, collision, players) lives in SpacetimeDB databases. Meld can use one in place of a
-VMaNGOS world database: Preferences › LyraCore Realm… (`LyraCoreDialog.svelte`, bindings `LyraCore` and
-`SetLyraCore` in `app_lyracore.go`) saves `config.LyraCore` (the SpacetimeDB URL, a database owner's
-token, the default database and the gateway's `LYRACORE_SHARD_MAP`). With a URL set, it wins over
-`VmangosPath` for what it covers.
+templates, terrain, collision, players) lives in one SpacetimeDB database, the realm's Shard, which its
+Native Host serves. Meld can use one in place of a VMaNGOS world database. With a realm set, it wins
+over `VmangosPath` for what it covers.
 
+- **`lyracore editor`** (LyraCore's CLI) builds this fork at the commit LyraCore pins and starts it on the
+  local realm with `MELD_LYRACORE_URL`, `MELD_LYRACORE_DATABASE`, `MELD_LYRACORE_TOKEN_FILE` (the path
+  of the realm's owner token, read again at each call) and `MELD_WOW_PATH` (the client folder). They
+  hold for that session only (`lyraSession` in `app_lyracore.go`, `NewApp`), nothing is saved, and the
+  LyraCore Realm dialog shows them read-only.
+- Otherwise Preferences › LyraCore Realm… (`LyraCoreDialog.svelte`, bindings `LyraCore` and
+  `SetLyraCore`) saves `config.LyraCore`: the SpacetimeDB URL, the Operator's token and the database.
 - `internal/stdb` is the HTTP client: `SQL`/`Query` (`POST /v1/database/<db>/sql`, rows as raw JSON so
   a u64 stays exact; `Table.Each` reads them by column) and `Call` (`/call/<reducer>`, the arguments
   as a JSON array). Its SQL has no `IN` and no joins: lookups are OR-chained in batches
   (`lyraLookup`, 150 keys).
-- `internal/lyracore` is the realm: `Realm.Database(map)` routes a map to its shard (one realm spans
-  several databases, such as `lyracore` for map 0 and `lyracore-world-1` for map 1), and the guid
-  helpers. A LyraCore guid is packed (`0xF130<<48 | entry<<24 | spawn id` for a creature,
-  `0xF110<<48 | spawn id` for an object) and needs 64 bits; Meld's `guid` is the low 48 bits
-  (`LowGUID`), an exact JavaScript number, and `CreatureGUID`/`ObjectGUID` add the high part back.
+- `internal/lyracore` is the realm (`Realm.Database`, the Shard) and the guid helpers. A LyraCore guid
+  is packed (`0xF130<<48 | entry<<24 | spawn id` for a creature, `0xF110<<48 | spawn id` for an object)
+  and needs 64 bits; Meld's `guid` is the low 48 bits (`LowGUID`), an exact JavaScript number, and
+  `CreatureGUID`/`ObjectGUID` add the high part back.
 - `vmangos.ReadLyraSpawns` (`LoadSpawns` with a realm set) reads `game_creature_spawn` and
   `game_gameobject` rows of instance 0 in the region's bounds, their templates
   (`game_creature_template`, `game_gameobject_template`) and the creatures' patrols
   (`game_creature_waypoint`, in id order; a creature with points shows as movement type 2). The map ID
   comes from the client's Map.dbc (`clientMapID`). LyraCore has no equipment, addon pose, events, pools
   or formations, so those stay empty.
-- The realm's SpacetimeDB listens on the realm machine's loopback, so Meld reaches it through an SSH
-  tunnel (on the dev machine, the user unit `lyracore-tunnel.service`: local `127.0.0.1:3300` to the
-  server's `127.0.0.1:3000`). The owner token is `spacetimedb_token` in the `lyracore` user's
-  `~/.config/spacetime/cli.toml` on the realm machine.
-- Saving spawn edits to a realm is not built yet: LyraCore has no reducer that changes one spawn and
-  takes its live entity along (a SQL delete leaves the creature in the world, a move shows only after
-  a respawn). The editor reducers Meld would call are proposed in LyraCoreProject/LyraCore#757.
+- Save Spawns (`ApplySpawnEdits`, `vmangos.ApplyLyraSpawnEdits`) sends the region's edits as one call
+  of the Module's `operator_apply_spawn_edits` (LyraCore's `docs/operator-content-api.md`), one
+  transaction, and the realm shows them at once (`Result.live`, so no restart note). A creature given
+  another entry is deleted and created again, since its guid holds the entry. The realm gives new
+  spawns their guids, so `NextCreatureGUID`/`NextObjectGUID` return a placeholder and the region reads
+  its spawns again after a save that added any; a new creature's patrol is left for the next save. A
+  change LyraCore has no field for (scale, look, wander distance, formation, pool) is reported as not
+  written. A save over the call's limits (256 edits, 4,096 waypoints) is refused, not split. An update
+  of a game object keeps the realm's `state`. The creature and object lists for placing come from the
+  realm's templates (`ListLyraCreatureTemplates`, `ListLyraObjectTemplates`, `SearchLyraCreatures`).
+- A realm on another machine listens on its loopback, so Meld reaches it through an SSH tunnel to its
+  `127.0.0.1:3000`.

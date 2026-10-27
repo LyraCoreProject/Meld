@@ -20,7 +20,7 @@ const lyraBatch = 150
 // size tiles at (x, y) of the named map: its game_creature_spawn and game_gameobject rows (the
 // spawns themselves, instance 0, not the live copies an instance makes), dressed from their
 // templates like ReadSpawns' and with the creatures' patrol paths (game_creature_waypoint). The map
-// ID comes from the client's Map.dbc, the map's database from the realm's shard map.
+// ID comes from the client's Map.dbc.
 //
 // LyraCore keeps less than VMaNGOS: no equipment, addon pose, events, pools or formations, and a
 // creature's respawn time is one number. A spawn's guid is the low 48 bits of LyraCore's (see
@@ -33,7 +33,7 @@ func ReadLyraSpawns(realm *lyracore.Realm, dataDir, mapName string, x, y, size i
 	if err != nil {
 		return nil, err
 	}
-	db := realm.Database(uint32(mapID))
+	db := realm.Database
 	t := float64(adt.TileSize)
 	zp := float64(adt.ZeroPoint)
 	xLo, xHi := zp-float64(y+size)*t, zp-float64(y)*t

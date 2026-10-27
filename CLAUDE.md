@@ -145,9 +145,10 @@ cd frontend && bun run build   # frontend only
   - `vmangos` is the server side: regions read from the client and written back as a patch (with the
     map's WDL horizon redrawn for the block, `wdl.go`), the map and spawn exports, the world database's spawns, templates and looks, the DBC tables the editor
     needs (maps, zones, emotes, liquids, ground effects), and launching the client and servers.
-  - `stdb` is a SpacetimeDB HTTP client, and `lyracore` a LyraCore realm on it (its shards and
-    packed guids): with a realm set (Preferences › LyraCore Realm…), spawns come from its databases
-    instead of VMaNGOS's (`vmangos.ReadLyraSpawns`; docs/architecture/client.md, LyraCore realms).
+  - `stdb` is a SpacetimeDB HTTP client, and `lyracore` a LyraCore realm on it (its Shard and
+    packed guids): with a realm set (`lyracore editor`, or Preferences › LyraCore Realm…), spawns are
+    read from it and saved live through its operator reducers instead of VMaNGOS's database
+    (`vmangos.ReadLyraSpawns`, `vmangos.ApplyLyraSpawnEdits`; docs/architecture/client.md, LyraCore realms).
   - `game` closes and reopens the client (and the world server, for a write it reads at its start)
     around a patch write: Wow.exe, or Benilla (the
     open-source 1.12.1 client, `config.GameClient`, started from its folder with `WOW_DATA`,

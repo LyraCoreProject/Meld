@@ -103,6 +103,8 @@ type Result struct {
 	Deleted int    `json:"deleted"`
 	// Skipped says, one line each, what wasn't exported and why.
 	Skipped []string `json:"skipped"`
+	// Live says the edits went into a running LyraCore realm, which shows them at once.
+	Live bool `json:"live"`
 }
 
 // Rows elsewhere that name a spawn by its guid, removed with it.

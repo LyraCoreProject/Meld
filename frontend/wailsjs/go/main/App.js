@@ -710,8 +710,8 @@ export function SetGameWindow(arg1, arg2) {
   return window['go']['main']['App']['SetGameWindow'](arg1, arg2);
 }
 
-export function SetLyraCore(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['SetLyraCore'](arg1, arg2, arg3, arg4);
+export function SetLyraCore(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetLyraCore'](arg1, arg2, arg3);
 }
 
 export function SetUnsaved(arg1) {

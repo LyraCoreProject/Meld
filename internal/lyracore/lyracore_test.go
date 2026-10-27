@@ -2,18 +2,13 @@ package lyracore
 
 import "testing"
 
-func TestDatabaseFollowsShardMap(t *testing.T) {
-	r, err := Open(Settings{URL: "http://x", Shards: `"36:*=lyracore-instances, 1:*=lyracore-world-1, 450:*=lyracore-world-1, 0:7=other"`})
+func TestOpen(t *testing.T) {
+	r, err := Open(Settings{URL: " http://x "})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for m, want := range map[uint32]string{0: "lyracore", 1: "lyracore-world-1", 36: "lyracore-instances", 450: "lyracore-world-1", 13: "lyracore"} {
-		if got := r.Database(m); got != want {
-			t.Errorf("map %d: %s, want %s", m, got, want)
-		}
-	}
-	if _, err := ParseShards("1:*"); err == nil {
-		t.Error("an entry without '=' parsed")
+	if r.Database != DefaultDatabase || r.DB.URL != "http://x" {
+		t.Errorf("opened %q at %q", r.Database, r.DB.URL)
 	}
 	if _, err := Open(Settings{}); err == nil {
 		t.Error("no URL opened")

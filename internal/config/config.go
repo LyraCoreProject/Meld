@@ -49,13 +49,11 @@ type Window struct {
 }
 
 // LyraCore is how Meld reaches a LyraCore realm (lyracore.Settings): its SpacetimeDB server's URL,
-// a database owner's token (stored in plain text, like Login's password), the database of the maps
-// the shard map leaves out, and the gateway's LYRACORE_SHARD_MAP.
+// the Operator's token (stored in plain text, like Login's password) and the realm's Shard.
 type LyraCore struct {
 	URL      string `json:"url,omitempty"`
 	Token    string `json:"token,omitempty"`
 	Database string `json:"database,omitempty"`
-	Shards   string `json:"shards,omitempty"`
 }
 
 // Login is a game account to log in with after a region export.

@@ -12,7 +12,8 @@
 	let token = $state('')
 	let hasToken = $state(false)
 	let database = $state('')
-	let shards = $state('')
+	// Set by `lyracore editor` for this session, so it can't be changed here.
+	let session = $state(false)
 	let busy = $state(false)
 	let error = $state('')
 
@@ -22,7 +23,7 @@
 			url = info.url
 			hasToken = info.hasToken
 			database = info.database
-			shards = info.shards
+			session = info.session
 		} catch {
 			// No desktop app behind the page: start empty.
 		}
@@ -32,7 +33,7 @@
 		busy = true
 		error = ''
 		try {
-			await SetLyraCore(nextUrl, token, database, shards)
+			await SetLyraCore(nextUrl, token, database)
 			setStatus(nextUrl ? `Connected to the LyraCore realm at ${nextUrl}. Reopen a region to load its spawns.` : 'Cleared the LyraCore realm.')
 			close()
 		} catch (e) {
@@ -45,23 +46,28 @@
 
 <Modal title="LyraCore realm" width={480} onclose={close}>
 	<p>With a realm set, spawns are read from and saved to its SpacetimeDB instead of a VMaNGOS world database.</p>
-	<p>The database and shard map are the gateway's <code>LYRACORE_DATABASE</code> and <code>LYRACORE_SHARD_MAP</code>.</p>
-	<p class="warn">The token is a database owner's, saved in plain text in your Meld config file.</p>
+	{#if session}
+		<p><code>lyracore editor</code> connected this session to the local realm. Saved spawns show in it at once.</p>
+	{:else}
+		<p class="warn">The token is the realm's Operator's (on a local realm, <code>.lyracore/native-owner-token</code>), saved in plain text in your Meld config file.</p>
+	{/if}
 	<div class="fields">
 		<label for="lyra-url">SpacetimeDB URL</label>
-		<input id="lyra-url" type="text" autocomplete="off" placeholder="http://127.0.0.1:3000" bind:value={url} />
-		<label for="lyra-token">Owner token</label>
-		<input id="lyra-token" type="password" autocomplete="off" bind:value={token} placeholder={hasToken ? 'Saved (leave blank to keep it)' : ''} />
+		<input id="lyra-url" type="text" autocomplete="off" placeholder="http://127.0.0.1:3000" disabled={session} bind:value={url} />
+		<label for="lyra-token">Operator token</label>
+		<input id="lyra-token" type="password" autocomplete="off" disabled={session} bind:value={token} placeholder={hasToken ? 'Saved (leave blank to keep it)' : ''} />
 		<label for="lyra-db">Database</label>
-		<input id="lyra-db" type="text" autocomplete="off" placeholder="lyracore" bind:value={database} />
-		<label for="lyra-shards">Shard map</label>
-		<textarea id="lyra-shards" rows="3" placeholder="1:*=lyracore-world-1, 36:*=lyracore-instances" bind:value={shards}></textarea>
+		<input id="lyra-db" type="text" autocomplete="off" placeholder="lyracore" disabled={session} bind:value={database} />
 	</div>
 	{#if error}<p class="error">{error}</p>{/if}
 	{#snippet actions()}
-		<button disabled={busy} onclick={() => save('')}>Clear realm</button>
-		<button onclick={close}>Cancel</button>
-		<button class="active" disabled={busy || url.trim() === ''} onclick={() => save(url.trim())}>{busy ? 'Connecting…' : 'Connect'}</button>
+		{#if session}
+			<button class="active" onclick={close}>Close</button>
+		{:else}
+			<button disabled={busy} onclick={() => save('')}>Clear realm</button>
+			<button onclick={close}>Cancel</button>
+			<button class="active" disabled={busy || url.trim() === ''} onclick={() => save(url.trim())}>{busy ? 'Connecting…' : 'Connect'}</button>
+		{/if}
 	{/snippet}
 </Modal>
 
@@ -73,8 +79,7 @@
 		align-items: center;
 		margin-top: 10px;
 	}
-	.fields input,
-	.fields textarea {
+	.fields input {
 		width: 100%;
 	}
 	.warn {

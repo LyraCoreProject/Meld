@@ -179,35 +179,39 @@ export function reloadSpawns(engine: Engine) {
 
 /**
  * Writes the active region's spawn edits (moved, changed, added and deleted creatures and objects)
- * into the server's world database. The world server reads its spawns at start, so it has to be
- * restarted to show them.
+ * into the server's world database, or into the LyraCore realm. The world server reads its spawns at
+ * start, so it has to be restarted to show them; the realm shows them at once.
  */
 export function saveSpawns(engine: Engine) {
 	return guarded('Save spawns', async () => {
-		const saved = await withSaving('Saving spawns to the world database', () => writeSpawns(engine))
-		if (saved) setStatus(`${saved} Restart the world server to see them.`, 12000)
+		const saved = await withSaving('Saving spawns', () => writeSpawns(engine))
+		if (saved.text) setStatus(saved.live ? saved.text : `${saved.text} Restart the world server to see them.`, 12000)
 	})
 }
 
 /**
- * Writes the active region's spawn edits into the world database, unguarded, for Save Spawns and the
- * compile (#342). Returns the status sentence, or '' when there was nothing to write; throws when the
- * write failed.
+ * Writes the active region's spawn edits into the world database or the LyraCore realm, unguarded,
+ * for Save Spawns and the compile (#342). Returns the status sentence ('' when there was nothing to
+ * write) and whether the realm shows the edits already; throws when the write failed.
  */
-async function writeSpawns(engine: Engine): Promise<string> {
+async function writeSpawns(engine: Engine): Promise<{ text: string; live: boolean }> {
 	const b = editor.regionBlock
 	const edits = engine.spawnEdits()
-	if (!b || !editor.regionMap || edits.length === 0) return ''
+	if (!b || !editor.regionMap || edits.length === 0) return { text: '', live: false }
 	const res = await ApplySpawnEdits(editor.regionMap, b.x, b.y, b.size, edits)
 	engine.markSpawnsSaved()
 	const skipped = res.skipped?.length ? ` Not written: ${res.skipped.join('; ')}.` : ''
-	return `Saved spawns to the world database: ${res.added} added, ${res.changed} changed, ${res.deleted} deleted.${skipped}`
+	const counts = `${res.added} added, ${res.changed} changed, ${res.deleted} deleted.${skipped}`
+	if (!res.live) return { text: `Saved spawns to the world database: ${counts}`, live: false }
+	// The realm gave the new spawns their guids, so the region reads them back.
+	if (res.added > 0) reloadSpawns(engine)
+	return { text: `Saved spawns to the realm, live now: ${counts}`, live: true }
 }
 
-/** What the compile's spawn write did: its status note, whether it wrote any, and whether it failed. */
-type CompileSpawns = { note: string; saved: boolean; failed: boolean }
+/** What the compile's spawn write did: its status note, whether it wrote any, whether the realm shows them already, and whether it failed. */
+type CompileSpawns = { note: string; saved: boolean; live: boolean; failed: boolean }
 
-const noSpawns: CompileSpawns = { note: '', saved: false, failed: false }
+const noSpawns: CompileSpawns = { note: '', saved: false, live: false, failed: false }
 
 /**
  * Compile to Server and Compile All save the region's spawn edits with the ground (#342). A failure is
@@ -217,15 +221,15 @@ const noSpawns: CompileSpawns = { note: '', saved: false, failed: false }
 async function compileSpawns(engine: Engine): Promise<CompileSpawns> {
 	try {
 		const saved = await writeSpawns(engine)
-		return saved ? { note: ` ${saved}`, saved: true, failed: false } : noSpawns
+		return saved.text ? { note: ` ${saved.text}`, saved: true, live: saved.live, failed: false } : noSpawns
 	} catch (err) {
 		console.error(err)
-		return { note: ` The spawn edits were not saved to the world database (${err}), so the server was left alone.`, saved: false, failed: true }
+		return { note: ` The spawn edits were not saved (${err}), so the server was left alone.`, saved: false, live: false, failed: true }
 	}
 }
 
 /** The restart hint after spawns were saved with no server rebuild (which restarts the world server). */
-const restartNote = (s: CompileSpawns) => (s.saved ? ' Restart the world server to see the spawns.' : '')
+const restartNote = (s: CompileSpawns) => (s.saved && !s.live ? ' Restart the world server to see the spawns.' : '')
 
 /** Saves the active region's spawn edits as an SQL script for the world database, without running it. */
 export function exportSpawnSql(engine: Engine) {
