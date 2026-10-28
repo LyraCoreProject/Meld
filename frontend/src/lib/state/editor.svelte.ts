@@ -747,6 +747,8 @@ export const ui = $state({
 	saving: '',
 	/** The save's latest progress line (a publish's log), shown under the Saving bar; '' for none. */
 	savingDetail: '',
+	/** The Saving bar shows at once, for a save that updates the LyraCore realm. */
+	savingNow: false,
 	/** Vertices selected in Sculpt's Vertex mode (updated when a stroke ends). */
 	vertexCount: 0,
 	/** A texture waiting to be replaced in these paint chunks: the next texture picked in the browser takes its place. */

@@ -1,4 +1,4 @@
-import { startSaving } from '../state/saving'
+import { startRealmSaving } from '../state/saving'
 
 // The rows of a database editor's list tab (#577): the Spells, Shop, Quests and Messages tabs of the
 // creature editor, the Contents and Quests tabs of the game object editor and the quest editor's
@@ -96,7 +96,7 @@ export class RowList<T> {
 	 */
 	async save(label: string, write: (rows: T) => Promise<void>): Promise<boolean> {
 		this.saving = true
-		const end = startSaving(label)
+		const end = startRealmSaving(label)
 		this.error = ''
 		try {
 			await write(this.rows)

@@ -3,6 +3,7 @@
 	import Modal from './Modal.svelte'
 	import { setStatus, ui } from '../lib/state/editor.svelte'
 	import { LyraCore, SetLyraCore } from '../../wailsjs/go/main/App'
+	import { setRealmSaves } from '../lib/state/saving'
 
 	const close = () => (ui.dialog = null)
 
@@ -34,6 +35,7 @@
 		error = ''
 		try {
 			await SetLyraCore(nextUrl, token, database)
+			setRealmSaves(nextUrl !== '')
 			setStatus(nextUrl ? `Connected to the LyraCore realm at ${nextUrl}. Reopen a region to load its spawns.` : 'Cleared the LyraCore realm.')
 			close()
 		} catch (e) {

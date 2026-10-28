@@ -711,6 +711,10 @@ over `VmangosPath` for what it covers.
   written. A save over the call's limits (256 edits, 4,096 waypoints) is refused, not split. An update
   of a game object keeps the realm's `state`. The creature and object lists for placing come from the
   realm's templates (`ListLyraCreatureTemplates`, `ListLyraObjectTemplates`, `SearchLyraCreatures`).
+- With a realm set (`setRealmSaves` in `lib/state/saving.ts`, from `LyraCore()` at start and the
+  LyraCore Realm dialog), the database editors' Save buttons (`templateEditor`, `rowList`) and Save
+  Spawns go through `startRealmSaving`: the Saving bar reads "Updating the realm" over the editor's
+  own label and shows at once, without the 400 ms delay a quick local save gets.
 - A realm on another machine listens on its loopback, so Meld reaches it through an SSH tunnel to its
   `127.0.0.1:3000`.
 

@@ -1,5 +1,5 @@
 import { untrack } from 'svelte'
-import { startSaving } from '../state/saving'
+import { startRealmSaving } from '../state/saving'
 import { changedValues } from '../world/creatureFields'
 
 // The flow the database editors share (#576): the creature, game object, quest, item and spell
@@ -199,7 +199,7 @@ export class TemplateEditor<T, R extends TemplateRow> implements EditorFlow {
 	 */
 	async save(label: string, write: () => Promise<void>, refused?: (column: string) => void): Promise<boolean> {
 		this.saving = true
-		const end = startSaving(label)
+		const end = startRealmSaving(label)
 		this.error = ''
 		this.note = ''
 		try {
