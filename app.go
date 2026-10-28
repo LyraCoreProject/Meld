@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"Meld/internal/clientpatch"
 	"Meld/internal/config"
 	"Meld/internal/game"
 	"Meld/internal/handoff"
@@ -294,12 +295,17 @@ func (a *App) clientDataDir() (string, error) {
 	wowPath, sandboxData := a.cfg.WowPath, a.sandboxData
 	a.cfgMu.Unlock()
 	if sandboxData != "" {
+		clientpatch.Configure(sandboxData, a.LyraCore().URL != "")
 		return sandboxData, nil
 	}
 	if wowPath == "" {
 		return "", errors.New("no WoW client is set")
 	}
-	return wow.ResolveDataDir(wowPath)
+	data, err := wow.ResolveDataDir(wowPath)
+	if err == nil {
+		clientpatch.Configure(data, a.LyraCore().URL != "")
+	}
+	return data, err
 }
 
 // serverAndData are the VMaNGOS server folder and the client's data folder, which the spawn

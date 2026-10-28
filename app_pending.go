@@ -6,6 +6,7 @@ import (
 	goruntime "runtime"
 	"time"
 
+	"Meld/internal/clientpatch"
 	"Meld/internal/mpq"
 	"Meld/internal/vmangos"
 
@@ -49,6 +50,7 @@ func (a *App) saveClientFiles(dataDir string, files []mpq.File) error {
 // queueClientFiles is saveClientFiles that says where the files go (the patch's path) and whether
 // they wait for the game to close.
 func (a *App) queueClientFiles(dataDir string, files []mpq.File) (patch string, waiting bool, err error) {
+	clientpatch.Configure(dataDir, a.LyraCore().URL != "")
 	if len(files) == 0 {
 		return "", false, nil
 	}
@@ -58,7 +60,7 @@ func (a *App) queueClientFiles(dataDir string, files []mpq.File) (patch string, 
 		}
 		a.emitPending(dataDir)
 		a.watchPending()
-		return filepath.Join(dataDir, vmangos.PatchName), true, nil
+		return filepath.Join(dataDir, clientpatch.Name(dataDir)), true, nil
 	}
 	patch, err = vmangos.InstallWithPending(dataDir, files)
 	return patch, false, err

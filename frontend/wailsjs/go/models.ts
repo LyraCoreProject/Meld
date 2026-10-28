@@ -454,6 +454,8 @@ export namespace main {
 		}
 	}
 	export class TemplateSaved {
+	    live?: boolean;
+	    skipped?: string[];
 	    sql: string;
 	    refused?: vmangos.ColumnError;
 	
@@ -463,6 +465,8 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.live = source["live"];
+	        this.skipped = source["skipped"];
 	        this.sql = source["sql"];
 	        this.refused = this.convertValues(source["refused"], vmangos.ColumnError);
 	    }
@@ -3865,6 +3869,7 @@ export namespace vmangos {
 	
 	
 	export class TemplateRecord {
+	    readOnly?: boolean;
 	    entry: number;
 	    patch: number;
 	    columns: TemplateColumn[];
@@ -3876,6 +3881,7 @@ export namespace vmangos {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.readOnly = source["readOnly"];
 	        this.entry = source["entry"];
 	        this.patch = source["patch"];
 	        this.columns = this.convertValues(source["columns"], TemplateColumn);

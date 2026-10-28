@@ -58,13 +58,13 @@ const (
 	objectTable   = "gameobject_template"
 )
 
-// TemplateRecord is a creature or game object template's row: every column but entry and patch, as
-// text the way mariadb prints them ("" for NULL in a nullable column).
+// TemplateRecord holds editor values as text and metadata for the columns that can be changed.
 type TemplateRecord struct {
-	Entry   int               `json:"entry"`
-	Patch   int               `json:"patch"`
-	Columns []TemplateColumn  `json:"columns"`
-	Values  map[string]string `json:"values"`
+	ReadOnly bool              `json:"readOnly,omitempty"`
+	Entry    int               `json:"entry"`
+	Patch    int               `json:"patch"`
+	Columns  []TemplateColumn  `json:"columns"`
+	Values   map[string]string `json:"values"`
 }
 
 // parseColumns reads SHOW COLUMNS rows (field, type, null, key, default, extra) into the template

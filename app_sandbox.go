@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"Meld/internal/clientpatch"
 	"Meld/internal/sandbox"
 	"Meld/internal/vmangos"
 	"Meld/internal/wow"
@@ -100,7 +101,11 @@ func (a *App) StartClientSandbox() (ClientSandbox, error) {
 	// The archives close while the copy is refreshed: Windows doesn't replace or unlink a file
 	// Meld's own reader holds open.
 	a.wow.Suspend()
+	clientpatch.Configure(realData, a.LyraCore().URL != "")
 	data, err := sandbox.Prepare(realData, root)
+	if err == nil {
+		clientpatch.Configure(data, a.LyraCore().URL != "")
+	}
 	if err == nil {
 		err = vmangos.DropPending(data)
 	}
@@ -114,7 +119,7 @@ func (a *App) StartClientSandbox() (ClientSandbox, error) {
 	a.cfgMu.Unlock()
 	a.sandboxGen++
 	gen := a.sandboxGen
-	a.sandboxStamp = sandbox.StampOf(filepath.Join(realData, vmangos.PatchName))
+	a.sandboxStamp = sandbox.StampOf(filepath.Join(realData, clientpatch.Name(realData)))
 	a.sandboxReal = realData
 	a.sandboxTimer = time.AfterFunc(sandboxLimit, func() {
 		a.sandboxMu.Lock()
@@ -149,7 +154,7 @@ func (a *App) EndClientSandbox() SandboxEnded {
 	}
 	before, real := a.sandboxStamp, a.sandboxReal
 	a.endSandboxLocked()
-	now := sandbox.StampOf(filepath.Join(real, vmangos.PatchName))
+	now := sandbox.StampOf(filepath.Join(real, clientpatch.Name(real)))
 	return SandboxEnded{WasOn: true, RealUnchanged: now == before, RealPatch: now}
 }
 

@@ -367,7 +367,7 @@ export function SaveTextDialog(arg1:string):Promise<string>;
 
 export function SaveThumbnail(arg1:string,arg2:string):Promise<void>;
 
-export function SaveVendor(arg1:number,arg2:Array<vmangos.VendorItem>):Promise<string>;
+export function SaveVendor(arg1:number,arg2:Array<vmangos.VendorItem>):Promise<main.TemplateSaved>;
 
 export function ScriptCommands(arg1:string,arg2:number):Promise<Array<vmangos.ScriptCommand>>;
 

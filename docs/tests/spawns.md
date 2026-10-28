@@ -746,3 +746,27 @@ new icon) in Meld's patch only on Save or New spell.
   says "live now" and the creature stands at its new place in the game without a restart.
 - By hand with curl: `curl -H "Authorization: Bearer $T" --data "SELECT * FROM game_creature_spawn WHERE
   map_id = 0 AND x > -9000 AND x < -8800 LIMIT 5" http://127.0.0.1:3000/v1/database/lyracore/sql`.
+
+## LyraCore items and vendors
+
+- `go test ./internal/vmangos . -run 'LyraItem|LyraPatch|LyraClient|ApplyLyraItem' -v` checks the
+  mapping in both directions, defaults, unsupported values, numeric bounds, complete reducer JSON,
+  fresh-row preservation, limits, Refusal messages and patch selection. The HTTP test accepts only
+  SELECTs and `operator_apply_item_edits`. Patch tests use synthetic archives and temporary folders.
+- `TestLyraPatchKeepsRealmArchiveAndPendingSeparate` checks patch-4 priority, preservation of patch-3,
+  base reads, overlays, separate pending queues and a sandbox copy that is not a link to Meld's patch.
+  `TestLyraClientPatchChoice` covers session settings, saved settings and unchanged VMaNGOS selection,
+  including a session whose token cannot be read.
+- `TestApplyLyraItemEditsLive` creates an item, renames it, changes strength, replaces a vendor list
+  and reads both back. It restores the vendor list but leaves the created item because the reducer
+  has no item delete. Run only against a disposable realm with a creature template already seeded:
+  `LYRA_THROWAWAY=1 LYRA_URL=http://127.0.0.1:<free-port> LYRA_DATABASE=<database>
+  LYRA_TOKEN_FILE=<operator-token-file> WOW_DIR=<client> go test ./internal/vmangos -run
+  '^TestApplyLyraItemEditsLive$' -v`. Port 3000 is refused. Build and publish the Module from PR 879
+  into that disposable realm and claim its Operator first. Neither this test nor its setup belongs
+  on an existing realm. Creation readback has the concurrent-Operator race documented in
+  `docs/architecture/client.md`.
+- Manual checks still needed: open an item and the Shop tab with no VMaNGOS path, save and see
+  "Live now", see unsupported values reported, and inspect a connected client's tooltip and wearer
+  stats. Change an item icon, then confirm ItemDisplayInfo.dbc is in patch-4 while patch-3 is
+  byte-identical. Check the queued write on Windows with the game open.

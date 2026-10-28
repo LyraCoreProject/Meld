@@ -128,6 +128,11 @@ func (a *App) ObjectModel(display int) (string, error) {
 
 // ReadCreature reads a creature template's row (its newest patch) for the creature editor.
 func (a *App) ReadCreature(entry int) (vmangos.TemplateRecord, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return vmangos.TemplateRecord{}, err
+	} else if realm != nil {
+		return vmangos.ReadLyraVendorCreature(realm, entry)
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return vmangos.TemplateRecord{}, err
@@ -138,6 +143,9 @@ func (a *App) ReadCreature(entry int) (vmangos.TemplateRecord, error) {
 // SaveCreature writes a creature template's changed values (by column) into the world database
 // and returns the SQL it ran.
 func (a *App) SaveCreature(entry, patch int, values map[string]string) (string, error) {
+	if a.LyraCore().URL != "" {
+		return "", fmt.Errorf("LyraCore creature templates are read-only in Meld; only the Shop tab can be saved")
+	}
 	server, _, err := a.serverForWrite()
 	if err != nil {
 		return "", err
@@ -165,6 +173,11 @@ func (a *App) forgetStale() {
 
 // ReadVendor reads what a creature template sells (npc_vendor), for the creature editor's Shop tab.
 func (a *App) ReadVendor(entry int) (vmangos.Vendor, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return vmangos.Vendor{}, err
+	} else if realm != nil {
+		return vmangos.ReadLyraVendor(realm, entry)
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return vmangos.Vendor{}, err
@@ -172,13 +185,25 @@ func (a *App) ReadVendor(entry int) (vmangos.Vendor, error) {
 	return vmangos.ReadVendor(server, entry)
 }
 
-// SaveVendor replaces what a creature template sells with items, in order, and returns the SQL it ran.
-func (a *App) SaveVendor(entry int, items []vmangos.VendorItem) (string, error) {
+// SaveVendor replaces the creature's ordered offers and returns the write record or a Refusal.
+func (a *App) SaveVendor(entry int, items []vmangos.VendorItem) (TemplateSaved, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return TemplateSaved{}, err
+	} else if realm != nil {
+		if a.sandboxed() {
+			return TemplateSaved{}, errSandboxed
+		}
+		res, err := vmangos.SaveLyraVendor(realm, entry, items)
+		saved, err := templateSaved(res.SQL, err)
+		saved.Live, saved.Skipped = res.Live, res.Skipped
+		return saved, err
+	}
 	server, _, err := a.serverForWrite()
 	if err != nil {
-		return "", err
+		return TemplateSaved{}, err
 	}
-	return vmangos.SaveVendor(server, entry, items)
+	sql, err := vmangos.SaveVendor(server, entry, items)
+	return templateSaved(sql, err)
 }
 
 // ReadCreatureQuests reads the quests a creature template starts and ends, for the creature editor's Quests tab.
@@ -237,9 +262,10 @@ func (a *App) ReadQuest(entry int) (vmangos.TemplateRecord, error) {
 	return vmangos.ReadQuest(server, entry)
 }
 
-// TemplateSaved is what a template's Save did: the SQL it ran, or the value it refused (Refused, with
-// a nil error), whose column the editor opens the tab of (#597).
+// TemplateSaved carries SQL or reducer arguments; Refused is a validation failure with a nil error.
 type TemplateSaved struct {
+	Live    bool                 `json:"live,omitempty"`
+	Skipped []string             `json:"skipped,omitempty"`
 	SQL     string               `json:"sql"`
 	Refused *vmangos.ColumnError `json:"refused,omitempty"`
 }

@@ -4,6 +4,9 @@
 
 	// The bonuses and their spells, read once a session.
 	let kinds: Promise<vmangos.EquipBonusKind[]> | null = null
+	export function forgetEquipBonuses() {
+		kinds = null
+	}
 	function loadKinds(): Promise<vmangos.EquipBonusKind[]> {
 		if (!kinds) {
 			kinds = EquipBonuses().then((k) => (k ?? []).filter((x) => x.amounts?.length))

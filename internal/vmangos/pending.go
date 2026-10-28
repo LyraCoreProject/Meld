@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"Meld/internal/clientpatch"
 	"Meld/internal/mpq"
 )
 
@@ -96,9 +97,13 @@ var pendingRoot = func() string {
 	return filepath.Join(d, "Meld", "pending-client")
 }
 
-// pendingDir is the folder of a client data folder's waiting files.
+// pendingDir separates waiting files by client folder and target archive.
 func pendingDir(dataDir string) string {
-	sum := sha1.Sum([]byte(strings.ToLower(filepath.Clean(dataDir))))
+	key := strings.ToLower(filepath.Clean(dataDir))
+	if name := clientpatch.Name(dataDir); name != clientpatch.Default {
+		key += "/" + name
+	}
+	sum := sha1.Sum([]byte(key))
 	return filepath.Join(pendingRoot(), hex.EncodeToString(sum[:6]))
 }
 

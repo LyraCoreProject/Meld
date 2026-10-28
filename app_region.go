@@ -44,7 +44,7 @@ func (a *App) serveNavTile(w http.ResponseWriter, r *http.Request) {
 }
 
 // InstallMapPatch writes the given archive files (path to base64 bytes) into the loaded client's
-// patch-3.MPQ, for the server to load. Returns the archive's path.
+// Meld's selected patch archive, for the server to load. Returns the archive's path.
 func (a *App) InstallMapPatch(files map[string]string) (string, error) {
 	dataDir, err := a.clientDataDir()
 	if err != nil {

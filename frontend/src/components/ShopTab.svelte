@@ -26,7 +26,7 @@
 		}
 	}
 
-	let { entry, npcFlags, onvendorflag, dirty = $bindable(false) }: { entry: number; npcFlags: number; onvendorflag: () => void; dirty?: boolean } = $props()
+	let { entry, npcFlags, onvendorflag, dirty = $bindable(false), realm = false }: { entry: number; npcFlags: number; onvendorflag: () => void; dirty?: boolean; realm?: boolean } = $props()
 
 	let templateId = $state(0)
 	let template = $state<vmangos.VendorItem[]>([])
@@ -47,8 +47,11 @@
 
 	function save() {
 		void rows.save("Saving the creature's shop", async (items) => {
-			await SaveVendor(entry, items)
-			setStatus(`Saved the shop of creature ${entry} (${items.length} ${items.length === 1 ? 'item' : 'items'}). Restart the world server to see it in the game.`, 10000)
+			const result = await SaveVendor(entry, items)
+			if (result.refused) throw new Error(result.refused.message)
+			if (result.live && !(await rows.load())) throw new Error('Shop saved, but reading it back failed. Reload before editing again.')
+			const skipped = result.skipped?.length ? ` Not written: ${result.skipped.join('; ')}.` : ''
+			setStatus(`Saved the shop of creature ${entry} (${items.length} ${items.length === 1 ? 'item' : 'items'}). ${result.live ? 'Live now.' : 'Restart the world server to see it in the game.'}${skipped}`, 10000)
 		})
 	}
 
@@ -101,8 +104,7 @@
 	{#if (npcFlags & VENDOR_FLAG) === 0}
 		<p class="warn">
 			This creature has no Vendor flag, so the server opens no shop for it.
-			<button onclick={onvendorflag}>Set the flag</button>
-			<span class="dim">(saved with Save creature)</span>
+			{#if realm}<span class="dim">Changing creature flags is not supported for LyraCore realms.</span>{:else}<button onclick={onvendorflag}>Set the flag</button><span class="dim">(saved with Save creature)</span>{/if}
 		</p>
 	{/if}
 
@@ -126,8 +128,8 @@
 						<td class="item" use:idMenu={{ ids: [idOf('item', it.item)], name: it.name }} {...hoverItem(it.item, it.displayId)}
 							><ItemIcon displayId={it.displayId} /> <span style:color={QUALITY[it.quality] ?? QUALITY[1]}>{it.name || '(unknown item)'}</span> <span class="dim">{it.item}</span></td
 						>
-						<td><input type="number" min="0" max="255" value={it.maxCount} oninput={(e) => (it.maxCount = num(e.currentTarget.value, 255))} /></td>
-						<td><input type="number" min="0" value={it.incrTime} disabled={it.maxCount === 0} oninput={(e) => (it.incrTime = num(e.currentTarget.value, 4294967295))} /></td>
+						<td><input type="number" min="0" max={realm ? 4294967295 : 255} value={it.maxCount} oninput={(e) => (it.maxCount = num(e.currentTarget.value, realm ? 4294967295 : 255))} /></td>
+						<td><input type="number" min="0" value={it.incrTime} disabled={realm || it.maxCount === 0} oninput={(e) => (it.incrTime = num(e.currentTarget.value, 4294967295))} /></td>
 						<td class="row-actions">
 							<button title="Move up" disabled={i === 0} onclick={() => (rows.rows = moveRow(rows.rows, i, -1))}>↑</button>
 							<button title="Move down" disabled={i === rows.rows.length - 1} onclick={() => (rows.rows = moveRow(rows.rows, i, 1))}>↓</button>

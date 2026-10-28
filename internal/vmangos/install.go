@@ -11,13 +11,13 @@ import (
 	"strings"
 	"sync"
 
+	"Meld/internal/clientpatch"
 	"Meld/internal/mpq"
 	"Meld/internal/wow"
 )
 
-// PatchName is the client's patch archive that map edits go into. The VMaNGOS tools read
-// patch-3 through patch-9 for the server's map data, so it's the one the server sees too.
-const PatchName = "patch-3.MPQ"
+// PatchName is the VMaNGOS default; clientpatch.Name selects the archive for a client folder.
+const PatchName = clientpatch.Default
 
 // IronforgeMarker is the file Ironforge's exports carry. Its patch is replaced by Meld's,
 // after a backup, since Meld takes over the same job.
@@ -50,7 +50,7 @@ func CheckServer(dir string) error {
 var patchMu sync.Mutex
 
 // InstallPatch writes files as the client's patch archive in its Data folder. An archive that
-// Meld or Ironforge wrote is replaced (Ironforge's after a backup); any other patch-3 is
+// Meld or Ironforge wrote is replaced (Ironforge's after a backup); any other archive is
 // left alone, since it may be the game's. Returns the archive's path. One write runs at a time.
 func InstallPatch(dataDir string, files []mpq.File) (string, error) {
 	patchMu.Lock()
@@ -60,7 +60,7 @@ func InstallPatch(dataDir string, files []mpq.File) (string, error) {
 
 // installPatch is InstallPatch, for a caller holding patchMu.
 func installPatch(dataDir string, files []mpq.File) (string, error) {
-	target := filepath.Join(dataDir, PatchName)
+	target := filepath.Join(dataDir, clientpatch.Name(dataDir))
 	// A patch the game has open can't be replaced: say so before anything is backed up or written.
 	if err := checkFree(target); err != nil {
 		return "", err
@@ -72,13 +72,13 @@ func installPatch(dataDir string, files []mpq.File) (string, error) {
 	var keep []mpq.Entry
 	if _, err := os.Stat(target); err == nil {
 		if old, err = mpq.Open(target); err != nil {
-			return "", fmt.Errorf("cannot read %s: %w", PatchName, err)
+			return "", fmt.Errorf("cannot read %s: %w", clientpatch.Name(dataDir), err)
 		}
 		// Closed before the rename below; this is for the returns before it.
 		defer old.Close()
 		switch archiveOwnerOf(old) {
 		case "":
-			return "", fmt.Errorf("%s is not a patch Meld or Ironforge wrote; move it out of the Data folder first", PatchName)
+			return "", fmt.Errorf("%s is not a patch Meld or Ironforge wrote; move it out of the Data folder first", clientpatch.Name(dataDir))
 		case IronforgeMarker:
 			if err := backup(target, target+BackupSuffix); err != nil {
 				return "", err
@@ -86,7 +86,7 @@ func installPatch(dataDir string, files []mpq.File) (string, error) {
 		}
 		// Tiles edited earlier stay in the patch; the ones given here replace theirs.
 		if keep, err = carryOver(old, files); err != nil {
-			return "", fmt.Errorf("cannot read %s: %w", PatchName, err)
+			return "", fmt.Errorf("cannot read %s: %w", clientpatch.Name(dataDir), err)
 		}
 	}
 	changed := make([]string, 0, len(files))
@@ -96,7 +96,7 @@ func installPatch(dataDir string, files []mpq.File) (string, error) {
 	if len(keep) > 0 {
 		index, err := minimapIndex(old, files, keep)
 		if err != nil {
-			return "", fmt.Errorf("cannot read %s: %w", PatchName, err)
+			return "", fmt.Errorf("cannot read %s: %w", clientpatch.Name(dataDir), err)
 		}
 		kept := dropUnusedMinimaps(append([]mpq.Entry(nil), keep...), index)
 		changed = append(changed, droppedNames(keep, kept)...)
@@ -145,7 +145,7 @@ func replaceKeepingPrev(tmp, target string, hadOld bool) error {
 		if inUse(err) {
 			return lockedError(target)
 		}
-		return fmt.Errorf("cannot keep the previous %s as %s: %w", PatchName, filepath.Base(prev), err)
+		return fmt.Errorf("cannot keep the previous %s as %s: %w", filepath.Base(target), filepath.Base(prev), err)
 	}
 	if err := replaceFile(tmp, target); err != nil {
 		if rerr := os.Rename(prev, target); rerr != nil {
@@ -346,7 +346,7 @@ func backup(src, dst string) error {
 // writes only what changed since the last one. Without a patch Meld or Ironforge wrote, every file
 // counts as changed (InstallPatch then decides what to do with that patch).
 func ChangedFiles(dataDir string, files []mpq.File) ([]mpq.File, error) {
-	target := filepath.Join(dataDir, PatchName)
+	target := filepath.Join(dataDir, clientpatch.Name(dataDir))
 	if _, err := os.Stat(target); err != nil {
 		return files, nil
 	}

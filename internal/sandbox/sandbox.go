@@ -17,11 +17,12 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"Meld/internal/clientpatch"
 )
 
-// Patch is the archive Meld writes, the one the copy holds a copy of rather than a link to (as
-// vmangos.PatchName).
-const Patch = "patch-3.MPQ"
+// Patch is the VMaNGOS default; clientpatch.Name selects the archive the sandbox must copy.
+const Patch = clientpatch.Default
 
 // Prepare makes or refreshes the copy of the Data folder realData under root, and returns the copy's
 // Data folder. It fails rather than leave a copy whose patch is the real file.
@@ -45,7 +46,7 @@ func Prepare(realData, root string) (string, error) {
 	// probe left beside it (a backup, a .tmp) too.
 	for _, e := range have {
 		name := e.Name()
-		if _, ok := real[strings.ToLower(name)]; ok && !strings.EqualFold(name, Patch) {
+		if _, ok := real[strings.ToLower(name)]; ok && !strings.EqualFold(name, clientpatch.Name(realData)) {
 			continue
 		}
 		if err := retry(func() error { return os.RemoveAll(filepath.Join(data, name)) }); err != nil {
@@ -54,7 +55,7 @@ func Prepare(realData, root string) (string, error) {
 	}
 	for _, name := range real {
 		src, dst := filepath.Join(realData, name), filepath.Join(data, name)
-		if strings.EqualFold(name, Patch) {
+		if strings.EqualFold(name, clientpatch.Name(realData)) {
 			if err := copyFile(src, dst); err != nil {
 				return "", err
 			}
@@ -161,19 +162,19 @@ func retry(op func() error) error {
 
 // check makes sure the copy's patch is a file of its own, so writing it can't change the real one.
 func check(realData, data string) error {
-	ri, err := os.Stat(filepath.Join(realData, Patch))
+	ri, err := os.Stat(filepath.Join(realData, clientpatch.Name(realData)))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	di, err := os.Lstat(filepath.Join(data, Patch))
+	di, err := os.Lstat(filepath.Join(data, clientpatch.Name(realData)))
 	if err != nil {
 		return err
 	}
 	if di.Mode()&os.ModeSymlink != 0 || os.SameFile(ri, di) {
-		return fmt.Errorf("the throwaway client's %s is the real one; refusing to use it", Patch)
+		return fmt.Errorf("the throwaway client's %s is the real one; refusing to use it", clientpatch.Name(realData))
 	}
 	return nil
 }
