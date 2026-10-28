@@ -307,7 +307,7 @@ export function SaveBrushDialog(arg1:string):Promise<string>;
 
 export function SaveConditionText(arg1:number,arg2:number,arg3:number,arg4:string,arg5:string):Promise<vmangos.GreetingSaved>;
 
-export function SaveCreature(arg1:number,arg2:number,arg3:Record<string, string>):Promise<string>;
+export function SaveCreature(arg1:number,arg2:number,arg3:Record<string, string>):Promise<main.TemplateSaved>;
 
 export function SaveCreatureQuests(arg1:number,arg2:vmangos.QuestLists):Promise<string>;
 

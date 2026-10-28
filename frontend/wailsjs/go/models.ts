@@ -1235,6 +1235,7 @@ export namespace vmangos {
 	    }
 	}
 	export class CreatureSpells {
+	    unavailable?: string;
 	    listId: number;
 	    name: string;
 	    shared: number;
@@ -1246,6 +1247,7 @@ export namespace vmangos {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.unavailable = source["unavailable"];
 	        this.listId = source["listId"];
 	        this.name = source["name"];
 	        this.shared = source["shared"];
@@ -1271,6 +1273,9 @@ export namespace vmangos {
 		}
 	}
 	export class CreatureSpellsSaved {
+	    live?: boolean;
+	    skipped?: string[];
+	    refused?: ColumnError;
 	    listId: number;
 	    sql: string;
 	
@@ -1280,9 +1285,30 @@ export namespace vmangos {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.live = source["live"];
+	        this.skipped = source["skipped"];
+	        this.refused = this.convertValues(source["refused"], ColumnError);
 	        this.listId = source["listId"];
 	        this.sql = source["sql"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class CreatureTemplate {
 	    entry: number;
@@ -3869,7 +3895,7 @@ export namespace vmangos {
 	
 	
 	export class TemplateRecord {
-	    readOnly?: boolean;
+	    realm?: boolean;
 	    entry: number;
 	    patch: number;
 	    columns: TemplateColumn[];
@@ -3881,7 +3907,7 @@ export namespace vmangos {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.readOnly = source["readOnly"];
+	        this.realm = source["realm"];
 	        this.entry = source["entry"];
 	        this.patch = source["patch"];
 	        this.columns = this.convertValues(source["columns"], TemplateColumn);

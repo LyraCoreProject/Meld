@@ -718,9 +718,8 @@ over `VmangosPath` for what it covers.
 
 The Item Editor and the creature editor's Shop tab read the realm's `game_item_template` and
 `game_npc_vendor`. All their writes call `operator_apply_item_edits`, once per save. They never
-write SQL. SQL item import and export are unavailable with a realm set. Creature templates have
-a read-only summary so the Shop tab opens without VMaNGOS; changing the Vendor flag still needs
-a separate realm tool.
+write SQL. SQL item import and export are unavailable with a realm set. The creature editor can
+change the Vendor flag through `SaveCreature`, as described below.
 
 `internal/vmangos/lyraitemfields.go` maps the realm row to the VMaNGOS column names the Item Editor
 uses. Its typed fields and editor tags are the mapping's single definition. Column metadata comes
@@ -778,6 +777,93 @@ respect the transaction limits of 64 edits, 128 offers per vendor and 512 offers
 vendor lists clear the offers. Successful writes discard Meld's item-list caches. Item updates
 also mark the local WDB item cache stale, as in VMaNGOS mode. The realm separately refreshes online
 wearers' stats and sends item queries to connected clients.
+
+### LyraCore creatures
+
+The Creature Editor reads `game_creature_template`, `game_creature_display`,
+`game_creature_spell` and `game_creature_cast`. Creature writes use only
+`operator_apply_creature_edits`, including the flight-path window's NPC flag change.
+This needs [LyraCore PR 880](https://github.com/LyraCoreProject/LyraCore/pull/880).
+The mapping follows [`world_import_creatures.rs` at `6175c248`](https://github.com/LyraCoreProject/LyraCore/blob/6175c24889203ca13a3a8d6b95e23d43e504fbbb/importer/src/world_import_creatures.rs).
+The reducer was verified at `f7c03e97a036601fe4b3085d34f9675521c92817`.
+
+`lyracreaturefields.go` holds the typed 26-field realm row and its editor names. A save reads
+that row again, applies changed values and submits the full row. Unmapped realm values stay
+unchanged. Display changes share the template update's reducer call, so a Refusal leaves both
+unchanged. HTTP 530 becomes `TemplateSaved.refused`; other HTTP failures remain errors.
+`Result.SQL` contains the reducer edit array, and the HTTP body is `[edits]`.
+
+| VMaNGOS editor column | Realm column or conversion |
+|---|---|
+| `name`, `subname`, `npc_flags`, `rank`, `trainer_type`, `trainer_class` | Same names |
+| `level_min`, `level_max` | `level`, `max_level` |
+| `faction`, `type`, `pet_family` | `faction_template`, `creature_type`, `creature_family` |
+| `base_attack_time` | `base_attack_time_ms` |
+| `gold_min`, `gold_max` | `money_min`, `money_max` |
+| `skinning_loot_id` | `skin_loot_id`, a shared list reference; no loot editor |
+| `health_min`, `health_max` | `health`, `max_level_health`, final endpoint values |
+| `damage_min`, `damage_max`, `armor` | Same names, final values at minimum level |
+| `display_id1..4` | Ordered display rows, by row id; first row supplies the template fallback |
+| `display_scale1..4` | Display row `scale`, an absolute scale. Zero resolves the client's display scale, or 1 if absent. |
+| `display_probability1..4`, `display_total_probability` | Row `weight`. A nonzero total must equal the weights; zero uses weight 1 up to the first empty slot and weight 0 afterwards, as in the importer. |
+| `creature_spells.spellId_1..8` | First spell becomes `game_creature_cast.spell_id`. With two or more spells, each also becomes a spell row: first has priority 10, condition 0; others have priority 20, condition 3. All condition values are 0. |
+| `spell_list_id` | No stored list id. The Spells tab uses creature entry as its display-only list id, or 0 for empty. |
+
+Current VMaNGOS computes stats from class-level rows, multipliers and damage variance. Those
+inputs cannot be recovered from the realm's final stats. Meld exposes final health, damage and
+armour in the Creature tab instead. `ClassLevelStats` reports that class-level stats are not
+available on a LyraCore realm. The new-creature guide hides multipliers and explains its defaults:
+100 health at both level endpoints, 1 to 2 damage and no armour. Final stats remain editable after
+creation. Existing per-entry `game_creature_level_stats` rows stay unchanged; the realm decides
+whether to use them or synthesize stats from the template.
+
+The importer also derives `unit_flags` and `type_flags` from static flags and rank. Meld preserves
+both masks instead of guessing lost source flags. It preserves `aggro_range` and
+`pickpocket_loot_id` too. Pickpocket rows are keyed by creature entry, so changing that source id
+would not select another list.
+
+Unsupported template columns are hidden and reported as not written if submitted. These include
+`unit_class`, `civilian`, `racial_leader`, `gossip_menu_id`, `vendor_id`, `trainer_id`,
+`trainer_spell`, `trainer_race`, `mount_display_id`, `equipment_id`, all stat multipliers,
+`damage_variance`, `damage_school`, `ranged_attack_time`, `xp_multiplier`, `speed_walk`, `speed_run`,
+`movement_type`, `inhabit_type`, `detection_range`, `call_for_help_range`, `leash_range`, `ai_name`,
+`script_name`, `spell_list_id`, `pet_spell_list_id`, `spawn_spell_id`, `totem_spell_id`, `auras`,
+`loot_id`, `pickpocket_loot_id`, `mechanic_immune_mask`, `school_immune_mask`, `immunity_flags`,
+`static_flags1`, `static_flags2` and `flags_extra`. Any other column without a mapping is also
+reported as not written.
+
+Realm previews, spawn reads and template lists use the stored absolute scale without applying
+the client display scale a second time.
+
+Display edits preserve known realm gender and bounding radius for the selected model. A model
+not in any realm display row gets the importer's defaults, gender 0 and radius 0.389. Lists with
+more than four effective displays are read-only in the Looks tab. A stale display list whose first
+row differs from the template's display or scale is inactive in the realm; Meld shows the template
+fallback and leaves the stored list alone until displays change. Display-use counts include the
+template fallback and display rows, counted once per creature and model.
+
+The Spells tab hides VMaNGOS probability, target, target parameters, cast flags, initial/repeat
+delays and script id. Nonzero submitted values are reported as not written. It cannot edit custom
+realm priorities, conditions, condition values or a fallback inconsistent with the importer's
+conversion. Such lists are shown read-only, and the binding refuses replacement too. Empty lists
+send an empty spell vector and a null cast. One spell clears the AI list and sets only the fallback.
+
+Creation copies a base template or uses defaults, with display 49, faction 35, level 1, type 7,
+scale 1 and attack time 2000 ms. The realm checks that the faction exists. It allocates entries in
+5,200,500 through 5,999,999. Meld reads the highest entry in that range, with the same concurrent
+creation limitation as items. A copy then copies displays and spells in a second transaction;
+failure reports the already-created entry. Death and pickpocket loot are not copied. Skinning
+keeps its shared list reference. There is no creature loot editor and no delete operation.
+
+Successful writes clear the Go creature-list and display caches. Template saves and creation
+invalidate the frontend creature lists and display picker; template saves retain WDB pruning.
+The realm respawns affected live authored creatures, subject to its 256-creature batch cap.
+It limits batches to 64 edits, each replacement list to 128 rows and the batch to 512 list rows.
+
+Equipment controls are unavailable because the realm has no equipment templates. Messages,
+Quests, the object and quest editors, and object loot show a not-yet-supported state. A binding
+that still needs VMaNGOS refuses with that message when a realm is set, even if a VMaNGOS folder
+is also configured.
 
 ### Meld's patch on a LyraCore client
 

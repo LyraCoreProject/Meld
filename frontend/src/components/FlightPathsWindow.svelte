@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { forgetCreatureTemplates } from './SpawnBrowser.svelte'
+	import { checkRefused } from '../lib/ui/templateEditor.svelte'
 	import { startSaving } from '../lib/state/saving'
 	import { onDestroy, tick } from 'svelte'
 	import { MapEntries, ReadCreature, SaveCreature, SaveTaxi, TaxiNetwork } from '../../wailsjs/go/main/App'
@@ -337,7 +339,8 @@
 				setStatus(`${s.name} is a flight master already.`, 6000)
 				return
 			}
-			await SaveCreature(s.entry, rec.patch, { npc_flags: String(flags | FLIGHT_MASTER) })
+			checkRefused(await SaveCreature(s.entry, rec.patch, { npc_flags: String(flags | FLIGHT_MASTER) }))
+			forgetCreatureTemplates()
 			setStatus(`${s.name} (${s.entry}) is a flight master now. The server sends a player who talks to one to the nearest stop their side has a mount at.`, 10000)
 		} catch (err) {
 			error = String(err)

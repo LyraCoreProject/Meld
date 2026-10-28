@@ -237,8 +237,12 @@ func (a *App) SpellsWithVisual(visual int) ([]vmangos.SpellRef, error) {
 	return vmangos.SpellsWithVisual(dataDir, visual, 5)
 }
 
-// ReadCreatureSpells reads a creature template's spell list (creature_spells), for the Spells tab.
 func (a *App) ReadCreatureSpells(entry int) (vmangos.CreatureSpells, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return vmangos.CreatureSpells{}, err
+	} else if realm != nil {
+		return vmangos.ReadLyraCreatureSpells(realm, entry)
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return vmangos.CreatureSpells{}, err
@@ -246,9 +250,24 @@ func (a *App) ReadCreatureSpells(entry int) (vmangos.CreatureSpells, error) {
 	return vmangos.ReadCreatureSpells(server, entry)
 }
 
-// SaveCreatureSpells sets a creature template's spell list to spells, in order, and returns its
-// spell_list_id now with the SQL it ran.
+// Returns the current list id, SQL or reducer arguments, unsupported values and any Refusal.
 func (a *App) SaveCreatureSpells(entry int, spells []vmangos.CreatureSpell) (vmangos.CreatureSpellsSaved, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return vmangos.CreatureSpellsSaved{}, err
+	} else if realm != nil {
+		if a.sandboxed() {
+			return vmangos.CreatureSpellsSaved{}, errSandboxed
+		}
+		res, err := vmangos.SaveLyraCreatureSpells(realm, entry, spells)
+		saved := vmangos.CreatureSpellsSaved{Live: res.Live, SQL: res.SQL, Skipped: res.Skipped, Refused: vmangos.Refused(err)}
+		if len(spells) > 0 {
+			saved.ListID = entry
+		}
+		if saved.Refused != nil {
+			return saved, nil
+		}
+		return saved, err
+	}
 	server, _, err := a.serverForWrite()
 	if err != nil {
 		return vmangos.CreatureSpellsSaved{}, err

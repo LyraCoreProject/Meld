@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { checkRefused } from '../lib/ui/templateEditor.svelte'
 	import { idMenu, idOf } from '../lib/ui/copyId'
 	import { ReadCreatureSpells, SaveCreatureSpells } from '../../wailsjs/go/main/App'
 	import { vmangos } from '../../wailsjs/go/models'
@@ -10,16 +11,10 @@
 	import SpellIcon from './SpellIcon.svelte'
 	import SpellPicker from './SpellPicker.svelte'
 
-	// The creature editor's Spells tab (#243): the spells the creature casts in combat, its
-	// creature_spells list (creature_template.spell_list_id), edited as a list and saved with Save
-	// spells, like the Shop (the world database keeps no undo). Spells are found by name or ID in the
-	// client's Spell.dbc, with their icons and text. A list other creatures share is copied on save, so
-	// theirs stays as it is; a creature with no list gets one.
-
 	/** The most spells a creature_spells row holds. */
 	const SLOTS = 8
 
-	let { entry, onsaved, dirty = $bindable(false) }: { entry: number; onsaved: (listId: number) => void; dirty?: boolean } = $props()
+	let { entry, onsaved, realm = false, dirty = $bindable(false) }: { realm?: boolean; entry: number; onsaved: (listId: number) => void; dirty?: boolean } = $props()
 
 	let list = $state<vmangos.CreatureSpells | null>(null)
 	const rows = new RowList<vmangos.CreatureSpell[]>({
@@ -57,14 +52,14 @@
 
 	function save() {
 		void rows.save("Saving the creature's spells", async (spells) => {
-			const r = await SaveCreatureSpells(entry, spells)
+			const r = checkRefused(await SaveCreatureSpells(entry, spells))
 			const before = list?.listId ?? 0
 			rows.markSaved()
 			if (r.listId !== before) onsaved(r.listId)
 			const n = spells.length
 			await rows.load()
 			const what = n ? `${n} ${n === 1 ? 'spell' : 'spells'} in list ${r.listId}` : 'no spells'
-			setStatus(`Saved the spells of creature ${entry} (${what}). Restart the world server to see it in the game.`, 10000)
+			setStatus(`Saved the spells of creature ${entry} (${what}). ${r.live ? 'Live now.' : 'Restart the world server to see it in the game.'}${r.skipped?.length ? ` Not written: ${r.skipped.join('; ')}.` : ''}`, 10000)
 		})
 	}
 
@@ -118,17 +113,36 @@
 		}
 		refs[r.id] = r
 		asked.add(r.id)
-		rows.rows = [...rows.rows, { spell: r.id, probability: 100, castTarget: 1, targetParam1: 0, targetParam2: 0, castFlags: 0, initialMin: 5, initialMax: 10, repeatMin: 10, repeatMax: 20, scriptId: 0 }]
+		rows.rows = [
+			...rows.rows,
+			{
+				spell: r.id,
+				probability: realm ? 0 : 100,
+				castTarget: realm ? 0 : 1,
+				targetParam1: 0,
+				targetParam2: 0,
+				castFlags: 0,
+				initialMin: realm ? 0 : 5,
+				initialMax: realm ? 0 : 10,
+				repeatMin: realm ? 0 : 10,
+				repeatMax: realm ? 0 : 20,
+				scriptId: 0,
+			},
+		]
 	}
 </script>
 
 <div class="spells">
+	{#if realm}<p>
+			The first spell is the fallback cast. With multiple spells, the first has priority 10; the others have priority 20 and require their aura to be missing on self. Timing, target, chance and cast flags are not available.
+		</p>{/if}
+	{#if list?.unavailable}<p>{list.unavailable}</p>{/if}
 	{#if rows.error}<p class="error">{rows.error}</p>{/if}
 
 	<div class="head">
 		<h3>Casts in combat{rows.rows.length ? ` (${rows.rows.length} of ${SLOTS})` : ''}</h3>
-		<button disabled={!rows.dirty || rows.saving} onclick={revert}>Revert</button>
-		<button class="active" disabled={!rows.dirty || rows.saving} onclick={save}>{rows.saving ? 'Saving…' : rows.dirty ? 'Save spells' : 'Saved'}</button>
+		<button disabled={!!list?.unavailable || !rows.dirty || rows.saving} onclick={revert}>Revert</button>
+		<button class="active" disabled={!!list?.unavailable || !rows.dirty || rows.saving} onclick={save}>{rows.saving ? 'Saving…' : rows.dirty ? 'Save spells' : 'Saved'}</button>
 	</div>
 	{#if list && list.listId > 0 && list.shared > 1}
 		<p class="warn">Spell list {list.listId} is shared with {list.shared - 1} other {list.shared === 2 ? 'creature' : 'creatures'}. Saving gives this creature its own copy and leaves theirs as they are.</p>
@@ -152,55 +166,55 @@
 							<span class="dim">{s.spell}</span>
 						</div>
 						<div class="row-actions">
-							<button title="Move up" disabled={i === 0} onclick={() => (rows.rows = moveRow(rows.rows, i, -1))}>↑</button>
-							<button title="Move down" disabled={i === rows.rows.length - 1} onclick={() => (rows.rows = moveRow(rows.rows, i, 1))}>↓</button>
-							<button title="Remove" onclick={() => (rows.rows = removeRow(rows.rows, i))}>✕</button>
+							<button title="Move up" disabled={!!list?.unavailable || i === 0} onclick={() => (rows.rows = moveRow(rows.rows, i, -1))}>↑</button>
+							<button title="Move down" disabled={!!list?.unavailable || i === rows.rows.length - 1} onclick={() => (rows.rows = moveRow(rows.rows, i, 1))}>↓</button>
+							<button disabled={!!list?.unavailable} title="Remove" onclick={() => (rows.rows = removeRow(rows.rows, i))}>✕</button>
 						</div>
 					</div>
 					{#if ref?.text}<p class="text">{ref.text}</p>{/if}
-					<div class="grid">
-						<label title="The chance it casts the spell when its timer is up"
-							>Chance (%) <input type="number" min="1" max="100" value={s.probability} oninput={(e) => (s.probability = Math.max(1, num(e.currentTarget.value, 100)))} /></label
-						>
-						<label class="wide"
-							>Cast at
-							<select value={s.castTarget} onchange={(e) => setTarget(s, Number(e.currentTarget.value))}>
-								{#each CAST_TARGETS as t (t.id)}<option value={t.id}>{t.name}</option>{/each}
-								{#if !CAST_TARGETS.some((t) => t.id === s.castTarget)}<option value={s.castTarget}>{target.name}</option>{/if}
-							</select>
-						</label>
-						{#if target.params[0]}{@render param(s, 'targetParam1', target.params[0])}{/if}
-						{#if target.params[1]}{@render param(s, 'targetParam2', target.params[1])}{/if}
-						<label title="Seconds after the fight starts, a random time from the first to the second"
-							>First cast (s)
-							<span class="pair"
-								><input type="number" min="0" max="65535" value={s.initialMin} onchange={(e) => setMin(s, 'initial', num(e.currentTarget.value, 65535))} /> to
-								<input type="number" min="0" max="65535" value={s.initialMax} onchange={(e) => setMax(s, 'initial', num(e.currentTarget.value, 65535))} /></span
+					{#if !realm}<div class="grid">
+							<label title="The chance it casts the spell when its timer is up"
+								>Chance (%) <input type="number" min="1" max="100" value={s.probability} oninput={(e) => (s.probability = Math.max(1, num(e.currentTarget.value, 100)))} /></label
 							>
-						</label>
-						<label title="Seconds between casts, a random time from the first to the second"
-							>Then every (s)
-							<span class="pair"
-								><input type="number" min="0" max="65535" value={s.repeatMin} onchange={(e) => setMin(s, 'repeat', num(e.currentTarget.value, 65535))} /> to
-								<input type="number" min="0" max="65535" value={s.repeatMax} onchange={(e) => setMax(s, 'repeat', num(e.currentTarget.value, 65535))} /></span
-							>
-						</label>
-					</div>
-					<details>
-						<summary>Conditions and flags{flagCount(s.castFlags) ? ` (${flagCount(s.castFlags)} set)` : ''}{s.scriptId ? ` · runs script ${s.scriptId}` : ''}</summary>
-						<div class="flags">
-							{#each CAST_FLAGS as f (f.bit)}
-								<label title={f.hint}><input type="checkbox" checked={(s.castFlags & f.bit) !== 0} onchange={(e) => setFlag(s, f.bit, e.currentTarget.checked)} /> {f.name}</label>
-							{/each}
+							<label class="wide"
+								>Cast at
+								<select value={s.castTarget} onchange={(e) => setTarget(s, Number(e.currentTarget.value))}>
+									{#each CAST_TARGETS as t (t.id)}<option value={t.id}>{t.name}</option>{/each}
+									{#if !CAST_TARGETS.some((t) => t.id === s.castTarget)}<option value={s.castTarget}>{target.name}</option>{/if}
+								</select>
+							</label>
+							{#if target.params[0]}{@render param(s, 'targetParam1', target.params[0])}{/if}
+							{#if target.params[1]}{@render param(s, 'targetParam2', target.params[1])}{/if}
+							<label title="Seconds after the fight starts, a random time from the first to the second"
+								>First cast (s)
+								<span class="pair"
+									><input type="number" min="0" max="65535" value={s.initialMin} onchange={(e) => setMin(s, 'initial', num(e.currentTarget.value, 65535))} /> to
+									<input type="number" min="0" max="65535" value={s.initialMax} onchange={(e) => setMax(s, 'initial', num(e.currentTarget.value, 65535))} /></span
+								>
+							</label>
+							<label title="Seconds between casts, a random time from the first to the second"
+								>Then every (s)
+								<span class="pair"
+									><input type="number" min="0" max="65535" value={s.repeatMin} onchange={(e) => setMin(s, 'repeat', num(e.currentTarget.value, 65535))} /> to
+									<input type="number" min="0" max="65535" value={s.repeatMax} onchange={(e) => setMax(s, 'repeat', num(e.currentTarget.value, 65535))} /></span
+								>
+							</label>
 						</div>
-					</details>
+						<details>
+							<summary>Conditions and flags{flagCount(s.castFlags) ? ` (${flagCount(s.castFlags)} set)` : ''}{s.scriptId ? ` · runs script ${s.scriptId}` : ''}</summary>
+							<div class="flags">
+								{#each CAST_FLAGS as f (f.bit)}
+									<label title={f.hint}><input type="checkbox" checked={(s.castFlags & f.bit) !== 0} onchange={(e) => setFlag(s, f.bit, e.currentTarget.checked)} /> {f.name}</label>
+								{/each}
+							</div>
+						</details>{/if}
 				</li>
 			{/each}
 		</ol>
 	{/if}
 
 	<h3>Add spells</h3>
-	<SpellPicker memoryKey="creature" start="npc" onpick={add} disabled={rows.rows.length >= SLOTS} title={rows.rows.length >= SLOTS ? `The list is full (${SLOTS} spells)` : 'Add it to the creature'} />
+	<SpellPicker memoryKey="creature" start="npc" onpick={add} disabled={!!list?.unavailable || rows.rows.length >= SLOTS} title={rows.rows.length >= SLOTS ? `The list is full (${SLOTS} spells)` : 'Add it to the creature'} />
 </div>
 
 {#snippet param(s: vmangos.CreatureSpell, key: 'targetParam1' | 'targetParam2', label: string)}

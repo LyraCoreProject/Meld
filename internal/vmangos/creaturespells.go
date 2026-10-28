@@ -38,21 +38,23 @@ func (s CreatureSpell) values() []int {
 		s.InitialMin, s.InitialMax, s.RepeatMin, s.RepeatMax, s.ScriptID}
 }
 
-// CreatureSpells is a creature template's spell list: creature_template.spell_list_id (0 for none),
-// the list row's name, how many creature templates use the list (Shared, this one included) and
-// its spells in slot order, empty slots left out.
+// ListID is zero for no spells; Unavailable makes a realm list read-only.
 type CreatureSpells struct {
-	ListID int             `json:"listId"`
-	Name   string          `json:"name"`
+	Unavailable string `json:"unavailable,omitempty"`
+	ListID      int    `json:"listId"`
+	Name        string `json:"name"`
+	// Shared counts this creature too.
 	Shared int             `json:"shared"`
 	Spells []CreatureSpell `json:"spells"`
 }
 
-// CreatureSpellsSaved is what SaveCreatureSpells did: the creature's spell list now (0 when it has
-// none left) and the SQL it ran.
+// Refused leaves the list unchanged; SQL holds SQL or reducer arguments.
 type CreatureSpellsSaved struct {
-	ListID int    `json:"listId"`
-	SQL    string `json:"sql"`
+	Live    bool         `json:"live,omitempty"`
+	Skipped []string     `json:"skipped,omitempty"`
+	Refused *ColumnError `json:"refused,omitempty"`
+	ListID  int          `json:"listId"`
+	SQL     string       `json:"sql"`
 }
 
 // creatureSpellsSelect selects list's row: its name, then every slot's columns.

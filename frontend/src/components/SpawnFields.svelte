@@ -18,11 +18,12 @@
 	// game object editor show them; every change is one undo step.
 
 	interface Props {
+		realm?: boolean
 		s: vmangos.WorldSpawn
 		/** The editor around these fields: picking a pool mate or formation member goes through it. */
 		onswitch?: (o: vmangos.WorldSpawn) => void
 	}
-	let { s, onswitch }: Props = $props()
+	let { s, onswitch, realm = false }: Props = $props()
 	const creature = $derived(s.kind !== 'object')
 
 	// The looping emotes a creature can hold (Emotes.dbc's STATE_* rows), read from the client once.
@@ -41,7 +42,7 @@
 	let weaponDisplays = $state<Map<number, number>>(new Map())
 	let weaponsAsked = false
 	$effect(() => {
-		if (weaponsAsked || !creature) return
+		if (realm || weaponsAsked || !creature) return
 		weaponsAsked = true
 		loadWeapons()
 			.then((list) => {
@@ -298,18 +299,18 @@
 					/>
 				</div>
 			{/if}
-			<div class="wide gear">
-				<span class="dim">Gear{s.equipment ? ` (equipment ${s.equipment})` : ''}</span>
-				{#each SLOTS as slot, i (slot)}
-					<button class="slot" title="Choose what goes in the {slot.toLowerCase()}" onclick={() => chooseWeapon(i)}>
-						<span class="dim">{slot}</span>
-						<span class="item" class:none={!s.equipItems?.[i]}
-							>{#if s.equipItems?.[i]}<ItemIcon displayId={weaponDisplays.get(s.equipItems[i]) ?? 0} size={14} />{/if}
-							{itemName(s.equipItems?.[i] ?? 0)}</span
-						>
-					</button>
-				{/each}
-			</div>
+			{#if realm}<p class="wide">Equipment templates are not available on a LyraCore realm.</p>{:else}<div class="wide gear">
+					<span class="dim">Gear{s.equipment ? ` (equipment ${s.equipment})` : ''}</span>
+					{#each SLOTS as slot, i (slot)}
+						<button class="slot" title="Choose what goes in the {slot.toLowerCase()}" onclick={() => chooseWeapon(i)}>
+							<span class="dim">{slot}</span>
+							<span class="item" class:none={!s.equipItems?.[i]}
+								>{#if s.equipItems?.[i]}<ItemIcon displayId={weaponDisplays.get(s.equipItems[i]) ?? 0} size={14} />{/if}
+								{itemName(s.equipItems?.[i] ?? 0)}</span
+							>
+						</button>
+					{/each}
+				</div>{/if}
 			<label
 				>Stance
 				<select value={s.standState} onchange={(e) => edit({ standState: selectNum(e) }, 'Stance')}>

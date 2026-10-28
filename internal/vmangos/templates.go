@@ -60,11 +60,11 @@ const (
 
 // TemplateRecord holds editor values as text and metadata for the columns that can be changed.
 type TemplateRecord struct {
-	ReadOnly bool              `json:"readOnly,omitempty"`
-	Entry    int               `json:"entry"`
-	Patch    int               `json:"patch"`
-	Columns  []TemplateColumn  `json:"columns"`
-	Values   map[string]string `json:"values"`
+	Realm   bool              `json:"realm,omitempty"`
+	Entry   int               `json:"entry"`
+	Patch   int               `json:"patch"`
+	Columns []TemplateColumn  `json:"columns"`
+	Values  map[string]string `json:"values"`
 }
 
 // parseColumns reads SHOW COLUMNS rows (field, type, null, key, default, extra) into the template

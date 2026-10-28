@@ -308,9 +308,11 @@ func (a *App) clientDataDir() (string, error) {
 	return data, err
 }
 
-// serverAndData are the VMaNGOS server folder and the client's data folder, which the spawn
-// bindings need both of.
+// VMaNGOS-only bindings must not fall back to its database when a realm is configured.
 func (a *App) serverAndData() (string, string, error) {
+	if a.LyraCore().URL != "" {
+		return "", "", errors.New("not yet supported on a LyraCore realm")
+	}
 	a.cfgMu.Lock()
 	server := a.cfg.VmangosPath
 	a.cfgMu.Unlock()

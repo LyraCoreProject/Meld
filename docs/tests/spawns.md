@@ -770,3 +770,31 @@ new icon) in Meld's patch only on Save or New spell.
   "Live now", see unsupported values reported, and inspect a connected client's tooltip and wearer
   stats. Change an item icon, then confirm ItemDisplayInfo.dbc is in patch-4 while patch-3 is
   byte-identical. Check the queued write on Windows with the game open.
+
+## LyraCore creature editor
+
+`go test ./internal/vmangos -run 'TestLyraCreature' -count=1` checks full-row mapping,
+column metadata, display slots and importer weight rules, client scale defaults, display-use
+counts, spell-list conversion, reducer JSON, unsupported values, Refusals, fresh reads,
+creation copies and cache invalidation. The HTTP test realm accepts SELECT reads and only the
+creature reducer endpoint. `go test -short .` includes sandbox and unavailable-editor checks,
+with a VMaNGOS folder deliberately configured alongside the realm.
+
+`TestApplyLyraCreatureEditsLive` needs `LYRA_URL`, `LYRA_TOKEN_FILE`, `WOW_DIR`,
+`LYRA_THROWAWAY=1` and optionally `LYRA_DATABASE`. It refuses port 3000. Use a disposable realm
+running LyraCore PR 880 with `debug_reducers,package_test_fixture`. The blank Module needs a
+faction template 35 fixture; the reducer checks references. Prepare that faction before the test.
+The test creates a template, saves its name, NPC flags and two displays, sets two fixture spells,
+reads everything back, copies the creature with its displays and spells, then clears spells. It leaves created templates because there is no delete.
+It sends every creature mutation through `operator_apply_creature_edits`.
+
+The October 28, 2026 run built Module `f7c03e97a036601fe4b3085d34f9675521c92817` from a
+scratch copy, published it to an in-memory standalone on port 59697, and claimed the Operator.
+The standalone's installed CLI uses explicit JWT private/public key paths instead of a key
+directory flag. One faction fixture row was inserted before the live test, outside Meld.
+The final live test passed. No production realm was used.
+
+Manual checks still needed: edit and save a creature through Wails, see its model and scale in
+Meld and the 1.12.1 client, confirm WDB pruning after an actual game exit, and confirm that the
+realm's respawn and client query refresh are visible. Also check that realm Messages and Quests
+show their short unsupported state and equipment controls stay hidden. This slice adds no loot UI.

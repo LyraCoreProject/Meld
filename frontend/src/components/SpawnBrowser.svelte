@@ -3,8 +3,11 @@
 	import type { vmangos } from '../../wailsjs/go/models'
 	import { spawnType, creatureTypeName, objectTypeName, rankName } from '../lib/world/spawnInfo'
 
-	// The world database's creature and game object templates, read once for the whole session (the
-	// Go side caches them too). The pipette and the options bar use them by entry.
+	let creatureRevision = $state(0)
+	export function forgetCreatureTemplates() {
+		creaturesPromise = null
+		creatureRevision++
+	}
 	let creaturesPromise: Promise<vmangos.CreatureTemplate[]> | null = null
 	export function loadCreatureTemplates(): Promise<vmangos.CreatureTemplate[]> {
 		if (!creaturesPromise) {
@@ -82,6 +85,7 @@
 	let error = $state('')
 	let loading = $state(true)
 	$effect(() => {
+		if (kind !== 'object') void creatureRevision
 		loading = true
 		const p = kind === 'object' ? loadObjectTemplates().then((o) => (objects = o)) : loadCreatureTemplates().then((c) => (creatures = c))
 		p.catch((err) => (error = String(err))).finally(() => (loading = false))
