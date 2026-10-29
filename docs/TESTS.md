@@ -805,6 +805,7 @@ the same scene, the report before and after.
 - Item editor (#353; body armour #356; probe `item-editor`)
 - Spell editor (#294, probe `spell-editor`; #361 visual composer, probe `spell-visual`)
 - LyraCore spawns (SpacetimeDB)
+- LyraCore items and vendors
 
 ### Export, the client and the game (`docs/tests/client.md`)
 

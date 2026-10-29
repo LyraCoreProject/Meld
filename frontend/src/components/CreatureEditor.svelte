@@ -67,6 +67,9 @@
 	})
 	ed.follow(() => target)
 	const record = $derived(ed.record)
+	$effect(() => {
+		if (record?.readOnly && tab !== 'spawn') tab = 'shop'
+	})
 	const values = $derived(ed.values)
 	const saved = $derived(ed.saved)
 	const changes = $derived(ed.changes)
@@ -246,7 +249,7 @@
 			{/if}
 		{/snippet}
 		{#snippet actions()}
-			{#if record}
+			{#if record && !record.readOnly}
 				<button disabled={!record || ed.saving} onclick={place} title="Place this creature in the region">Place in world</button>
 				<button disabled={!record || ed.saving || copying} onclick={startCopy} title="Make a new creature with this one's looks, stats, loot and AI">Copy this creature</button>
 				<button disabled={changeCount === 0 || ed.saving} onclick={() => ed.revert()}>Revert</button>
@@ -293,7 +296,7 @@
 			<section class="right">
 				<nav class="tabs">
 					{#if spawn}<button class:on={tab === 'spawn'} onclick={() => (tab = 'spawn')}>This spawn</button>{/if}
-					{#if record}
+					{#if record && !record.readOnly}
 						<button class:on={tab === 'creature'} onclick={() => (tab = 'creature')}>Creature</button>
 						<button class:on={tab === 'looks'} onclick={() => (tab = 'looks')}>Looks</button>
 						<button class:on={tab === 'spells'} onclick={() => (tab = 'spells')}>Spells</button>
@@ -301,7 +304,7 @@
 						<button class:on={tab === 'quests'} onclick={() => (tab = 'quests')}>Quests</button>
 						<button class:on={tab === 'messages'} onclick={() => (tab = 'messages')}>Messages</button>
 					{/if}
-					<button onclick={startNew} title="Open the creature guide">New creature</button>
+					{#if record?.readOnly}<button class:on={tab === 'shop'} onclick={() => (tab = 'shop')}>Shop</button>{:else}<button onclick={startNew} title="Open the creature guide">New creature</button>{/if}
 				</nav>
 
 				<div class="scroll">
@@ -332,7 +335,9 @@
 					{:else if ed.loading}
 						<p class="dim">Loading the creature…</p>
 					{/if}
-					{#if record && target.entry > 0}
+					{#if record?.readOnly && target.entry > 0}
+						<div hidden={tab !== 'shop'}><ShopTab bind:this={shopTab} entry={record.entry} npcFlags={Number(values.npc_flags) || 0} realm={true} onvendorflag={() => {}} bind:dirty={shopDirty} /></div>
+					{:else if record && target.entry > 0}
 						<div hidden={tab !== 'spells'}>
 							<SpellsTab bind:this={spellsTab} entry={record.entry} onsaved={spellsSaved} bind:dirty={spellsDirty} />
 						</div>

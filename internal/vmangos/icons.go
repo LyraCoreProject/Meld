@@ -80,7 +80,7 @@ func PlanIconImport(dataDir string, srcs []IconSource) (files []mpq.File, names,
 
 // clientHasIcon says whether an archive other than Meld's patch has the icon named name.
 func clientHasIcon(set *mpq.Set, name string) bool {
-	_, err := set.ReadFileExcept(IconPath(name), PatchName)
+	_, err := set.ReadFileExcept(IconPath(name), setPatchName(set))
 	return err == nil
 }
 

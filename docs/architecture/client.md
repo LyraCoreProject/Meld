@@ -713,3 +713,83 @@ over `VmangosPath` for what it covers.
   realm's templates (`ListLyraCreatureTemplates`, `ListLyraObjectTemplates`, `SearchLyraCreatures`).
 - A realm on another machine listens on its loopback, so Meld reaches it through an SSH tunnel to its
   `127.0.0.1:3000`.
+
+### LyraCore items and vendors
+
+The Item Editor and the creature editor's Shop tab read the realm's `game_item_template` and
+`game_npc_vendor`. All their writes call `operator_apply_item_edits`, once per save. They never
+write SQL. SQL item import and export are unavailable with a realm set. Creature templates have
+a read-only summary so the Shop tab opens without VMaNGOS; changing the Vendor flag still needs
+a separate realm tool.
+
+`internal/vmangos/lyraitemfields.go` maps the realm row to the VMaNGOS column names the Item Editor
+uses. Its typed fields and editor tags are the mapping's single definition. Column metadata comes
+from those types. `itemTabs` hides fields absent from the record's columns. A save reads the current
+realm row, applies the changed editor values and sends all 58 fields. Fields the editor cannot
+express keep their current realm values. Unsupported submitted values appear under "Not written";
+an unsupported primary stat leaves the entire primary-stat group unchanged. The reducer's Refusal
+message reaches the editor through `TemplateSaved.refused`.
+SpacetimeDB reports reducer failures with HTTP 530, as defined by its
+[`reducer_outcome_response`](https://github.com/clockworklabs/SpacetimeDB/blob/master/crates/client-api/src/routes/database.rs).
+Transport and server failures remain errors rather than editor Refusals.
+
+The mapping follows LyraCore's importer at
+[`6175c248`, `build_items_and_loot`](https://github.com/LyraCoreProject/LyraCore/blob/6175c24889203ca13a3a8d6b95e23d43e504fbbb/importer/src/world_import.rs)
+and its [`it` column names](https://github.com/LyraCoreProject/LyraCore/blob/6175c24889203ca13a3a8d6b95e23d43e504fbbb/importer/src/dump.rs).
+The reducer contract is [LyraCore PR 879](https://github.com/LyraCoreProject/LyraCore/pull/879).
+
+| VMaNGOS editor column | LyraCore column or conversion |
+|---|---|
+| `class`, `subclass`, `name`, `display_id`, `quality`, `inventory_type` | Same names |
+| `item_level`, `required_level`, `max_durability`, `buy_price`, `sell_price` | Same names |
+| `stackable` | `max_stack` |
+| `dmg_min1`, `dmg_max1`, `delay` | `damage_min`, `damage_max`, `delay_ms` |
+| `stat_type1..10` and `stat_value1..10` | Sum type 3 into `stat_agility`, 4 into `stat_strength`, 5 into `stat_intellect`, 6 into `stat_spirit`, 7 into `stat_stamina`. Reads use those five slots in that order, with five empty slots. |
+| `armor`, `block` | `stat_armor`, `block_value` |
+| `spellid_1..5`, `spelltrigger_1..5` | Same names |
+| `container_slots`, `sheath`, `bonding` | Same names |
+| `holy_res`, `fire_res`, `nature_res`, `frost_res`, `shadow_res`, `arcane_res` | Same names |
+| `required_skill`, `required_skill_rank`, `required_reputation_faction`, `required_reputation_rank`, `max_count` | Same names |
+| `flags` | `item_flags` |
+| `page_text`, `start_quest`, `bag_family`, `buy_count`, `food_type`, `random_property` | Same names |
+| `allowable_class`, `allowable_race` | `allowed_class`, `allowed_race`; -1 becomes 1503 or 255, as in the importer. Reads keep the exact mask. |
+| No editor equivalent | `stat_crit`, `stat_hit`, `restores_power` stay unchanged. The importer initializes them to 0, 0 and false. Crit and hit use basis points; Equip spells are separate fields. |
+| Vendor `item`, `maxcount`, row order | `item_entry`, `max_count`, zero-based `slot` |
+
+The editor cannot represent health or mana stat pairs, any other primary stat type, damage schools
+or damage components 2 through 5. It also hides `description`, `material`, `duration`,
+`other_team_entry`, `range_mod`, `ammo_type`, `spellcharges_*`, `spellppmrate_*`, `spellcooldown_*`,
+`spellcategory_*`, `spellcategorycooldown_*`, `required_spell`, `required_honor_rank`,
+`required_city_rank`, `area_bound`, `map_bound`, `extra_flags`, `lock_id`, `page_language`,
+`page_material`, `min_money_loot`, `max_money_loot`, `wrapped_gift`, `set_id` and `disenchant_id`.
+Any other column without an editor tag or a supported stat pair is also reported as not written
+if submitted. Vendor `incrtime`, `itemflags` and `condition_id` have no realm equivalent. The Shop
+tab disables restock time, and the binding reports nonzero extras as not written.
+
+New items copy all fields of a base item or use common junk defaults, including stack and buy count
+1 and unrestricted playable masks. New items of a kind take the supported usual values and median
+delay and durability from realm items of that kind. The realm allocates entries in 5,200,500 through
+5,999,999. Since the reducer returns no entry, Meld reads the highest entry in that range after
+creation. Another Operator can create between the call and that read; the realm's create log is
+the exact record when calls overlap. Do not use concurrent creates to identify a particular item.
+
+The reducer refuses Package Item Range and Fixture-Reserved updates. There is no delete. Saves
+respect the transaction limits of 64 edits, 128 offers per vendor and 512 offers per batch. Empty
+vendor lists clear the offers. Successful writes discard Meld's item-list caches. Item updates
+also mark the local WDB item cache stale, as in VMaNGOS mode. The realm separately refreshes online
+wearers' stats and sends item queries to connected clients.
+
+### Meld's patch on a LyraCore client
+
+With a realm set through the session or Preferences, Meld writes **`patch-4.MPQ`**. LyraCore's
+`lyracore client sync` owns `patch-3.MPQ`. VMaNGOS mode still writes `patch-3.MPQ`.
+[`internal/mpq/set.go`](../../internal/mpq/set.go), `priority` and `Set.ReadPrefix`, model the 1.x
+client's patch load order: numbered patches override earlier patches, so patch-4 loads after
+patch-3. The synthetic `TestLyraPatchKeepsRealmArchiveAndPendingSeparate` checks that order in
+Meld's reader; it does not launch a 1.12 client.
+
+`internal/clientpatch` selects the name per client data folder. Writers, backups, base-tile reads,
+icon ownership checks and sandbox copies use that name. Reads that exclude Meld's patch still
+include the realm's patch-3. Pending files have separate queues for patch-3 and patch-4, including
+their overlays, so switching the realm setting cannot flush one archive's waiting files into the
+other. A sandbox copies Meld's selected patch and links the other archives.

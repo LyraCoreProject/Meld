@@ -28,6 +28,20 @@ type Client struct {
 
 var defaultHTTP = &http.Client{Timeout: 60 * time.Second}
 
+// ReducerFailedStatus is SpacetimeDB's HTTP status for a reducer that returned an error.
+const ReducerFailedStatus = 530
+
+type HTTPError struct {
+	StatusCode int
+	Status     string
+	Path       string
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("spacetimedb %s: %s: %s", e.Path, e.Status, e.Body)
+}
+
 // Table is one statement's result: its column names and rows, each value as the server's JSON,
 // numbers kept exact (a u64 does not fit a float64).
 type Table struct {
@@ -145,7 +159,7 @@ func (c *Client) post(path, contentType string, body []byte) ([]byte, error) {
 		return nil, fmt.Errorf("spacetimedb: %w", err)
 	}
 	if res.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("spacetimedb %s: %s: %s", path, res.Status, strings.TrimSpace(string(out)))
+		return nil, &HTTPError{StatusCode: res.StatusCode, Status: res.Status, Path: path, Body: strings.TrimSpace(string(out))}
 	}
 	return out, nil
 }

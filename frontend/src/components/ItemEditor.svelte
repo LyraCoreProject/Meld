@@ -11,7 +11,7 @@
 	import { QUALITY_VARS, tooltipLines, type TooltipNames } from '../lib/wow/itemTooltip'
 	import { forgetName } from '../lib/wow/refNames'
 	import CreaturePreview from './CreaturePreview.svelte'
-	import EquipBonuses from './EquipBonuses.svelte'
+	import EquipBonuses, { forgetEquipBonuses } from './EquipBonuses.svelte'
 	import ItemIcon from './ItemIcon.svelte'
 	import ItemLookPicker, { forgetLooks, loadItemDisplays } from './ItemLookPicker.svelte'
 	import ItemTooltipBox from './ItemTooltipBox.svelte'
@@ -87,11 +87,14 @@
 
 	/** Forgets what the session knows of items that changed, so tooltips and pickers read them again. */
 	function forgetItems(entries: number[]) {
+		forgetEquipBonuses()
+		forgetLooks()
 		for (const e of entries) {
 			forgetItemRow(e)
 			forgetName('item', e)
 		}
 		searchVersion++
+		kinds = []
 	}
 
 	const RESTART = 'Restart the world server for the server to use it; the game asks for the item again when it starts from Meld.'
@@ -116,11 +119,13 @@
 					pendingVisual = -1
 				}
 				const n = changeCount
-				if (n > 0) checkRefused(await SaveItem(r.entry, r.patch, ed.changes))
+				const result = n > 0 ? await SaveItem(r.entry, r.patch, ed.changes) : null
+				if (result) checkRefused(result)
+				const skipped = result?.skipped?.length ? ` Not written: ${result.skipped.join('; ')}.` : ''
+				if (result?.live && !(await ed.load(r.entry))) throw new Error('Item saved, but reading it back failed. Reload before editing again.')
 				ed.markSaved()
 				forgetItems([r.entry])
-				forgetLooks()
-				ed.note = `Saved ${n} ${n === 1 ? 'value' : 'values'} of ${values.name} (item ${r.entry}) to the world database.${added} ${RESTART}`
+				ed.note = `Saved ${n} ${n === 1 ? 'value' : 'values'} of ${values.name} (item ${r.entry}) to the world database.${added} ${result?.live ? 'Live now. Meld clears the local item cache for the next launch.' : RESTART}${skipped}`
 				setStatus(ed.note, 10000)
 			},
 			// A refused value: show the tab it is on.
@@ -232,7 +237,7 @@
 				made = base ? `, a copy of ${copySource?.name}.` : '. Pick its look on the right.'
 			}
 			newName = ''
-			searchVersion++
+			forgetItems([entry])
 			ui.itemEditor = { entry }
 			tab = 'item'
 			ed.note = `Made item ${entry}, ${name}${made}`

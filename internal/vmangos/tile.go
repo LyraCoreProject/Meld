@@ -2,8 +2,10 @@ package vmangos
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"Meld/internal/adt"
+	"Meld/internal/clientpatch"
 	"Meld/internal/mpq"
 )
 
@@ -199,5 +201,12 @@ func BaseTileRoot(dataDir, mapName string, x, y int) ([]byte, error) {
 // readUnpatched reads name from the client's archives as if Meld's patch weren't there: the game's
 // files with Blizzard's own patches applied, without Meld's earlier exports (#273).
 func readUnpatched(set *mpq.Set, name string) ([]byte, error) {
-	return set.ReadFileExcept(name, PatchName)
+	return set.ReadFileExcept(name, setPatchName(set))
+}
+
+func setPatchName(set *mpq.Set) string {
+	for _, a := range set.Archives() {
+		return clientpatch.Name(filepath.Dir(a.Path))
+	}
+	return clientpatch.Default
 }

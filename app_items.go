@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 
 	"Meld/internal/mpq"
@@ -11,6 +12,11 @@ import (
 
 // SearchItems lists up to 100 item templates whose name has text in it (or whose entry it is).
 func (a *App) SearchItems(text string) ([]vmangos.ItemRef, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return nil, err
+	} else if realm != nil {
+		return vmangos.SearchLyraItems(realm, text, "name", false, 100)
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return nil, err
@@ -21,6 +27,11 @@ func (a *App) SearchItems(text string) ([]vmangos.ItemRef, error) {
 // SearchItemsSorted is SearchItems ordered by sort ("name", "entry", "quality", "itemLevel" or
 // "requiredLevel"), descending when desc, for the Item Editor's sortable list.
 func (a *App) SearchItemsSorted(text, sort string, desc bool) ([]vmangos.ItemRef, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return nil, err
+	} else if realm != nil {
+		return vmangos.SearchLyraItems(realm, text, sort, desc, 100)
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return nil, err
@@ -30,6 +41,11 @@ func (a *App) SearchItemsSorted(text, sort string, desc bool) ([]vmangos.ItemRef
 
 // ReadItem reads an item template's row, every column by name, for the Shop tab's tooltips.
 func (a *App) ReadItem(entry int) (map[string]string, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return nil, err
+	} else if realm != nil {
+		return vmangos.ReadLyraItem(realm, entry)
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return nil, err
@@ -57,6 +73,11 @@ func (a *App) ItemSets(ids []int) ([]vmangos.ItemSet, error) {
 
 // ReadItemTemplate reads an item template's row (its newest patch) for the item editor (#353).
 func (a *App) ReadItemTemplate(entry int) (vmangos.TemplateRecord, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return vmangos.TemplateRecord{}, err
+	} else if realm != nil {
+		return vmangos.ReadLyraItemTemplate(realm, entry)
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return vmangos.TemplateRecord{}, err
@@ -64,9 +85,23 @@ func (a *App) ReadItemTemplate(entry int) (vmangos.TemplateRecord, error) {
 	return vmangos.ReadItemTemplate(server, entry)
 }
 
-// SaveItem writes an item template's changed values (by column) into the world database and
-// returns the SQL it ran, or the value it refused.
+// SaveItem returns the SQL or reducer arguments written, unsupported values, or a Refusal.
 func (a *App) SaveItem(entry, patch int, values map[string]string) (TemplateSaved, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return TemplateSaved{}, err
+	} else if realm != nil {
+		if a.sandboxed() {
+			return TemplateSaved{}, errSandboxed
+		}
+		res, err := vmangos.SaveLyraItem(realm, entry, values)
+		if err == nil && res.Changed > 0 {
+			a.stale.AddItem(uint32(entry))
+			a.forgetStale()
+		}
+		saved, err := templateSaved(res.SQL, err)
+		saved.Live, saved.Skipped = res.Live, res.Skipped
+		return saved, err
+	}
 	server, _, err := a.serverForWrite()
 	if err != nil {
 		return TemplateSaved{}, err
@@ -82,6 +117,14 @@ func (a *App) SaveItem(entry, patch int, values map[string]string) (TemplateSave
 // CreateItem adds an item named name, a copy of item base (or a plain junk item for 0), and returns
 // its entry.
 func (a *App) CreateItem(base int, name string) (int, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return 0, err
+	} else if realm != nil {
+		if a.sandboxed() {
+			return 0, errSandboxed
+		}
+		return vmangos.CreateLyraItem(realm, base, name)
+	}
 	server, _, err := a.serverForWrite()
 	if err != nil {
 		return 0, err
@@ -92,6 +135,11 @@ func (a *App) CreateItem(base int, name string) (int, error) {
 // ListItemKinds lists the kinds of item (class, subclass, inventory type) the world database has, for
 // the item editor's New item.
 func (a *App) ListItemKinds() ([]vmangos.ItemKind, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return nil, err
+	} else if realm != nil {
+		return vmangos.ListLyraItemKinds(realm)
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return nil, err
@@ -102,6 +150,14 @@ func (a *App) ListItemKinds() ([]vmangos.ItemKind, error) {
 // CreateItemOfKind adds an item named name of a kind, with the usual basics of that kind's items and
 // no stats, and returns its entry.
 func (a *App) CreateItemOfKind(class, subclass, invType int, name string) (int, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return 0, err
+	} else if realm != nil {
+		if a.sandboxed() {
+			return 0, errSandboxed
+		}
+		return vmangos.CreateLyraItemOfKind(realm, vmangos.ItemKind{Class: class, Subclass: subclass, InvType: invType}, name)
+	}
 	server, _, err := a.serverForWrite()
 	if err != nil {
 		return 0, err
@@ -122,6 +178,11 @@ func (a *App) ItemModelLook(display, invType, race, sex int) (vmangos.ItemLook, 
 // ListItemDisplays lists the client's item displays with their icons and the items that use them,
 // for the item editor's look picker.
 func (a *App) ListItemDisplays() ([]vmangos.ItemDisplayEntry, error) {
+	if realm, dataDir, err := a.lyraRealmAndData(); err != nil {
+		return nil, err
+	} else if realm != nil {
+		return vmangos.ListLyraItemDisplays(realm, dataDir)
+	}
 	dataDir, err := a.clientDataDir()
 	if err != nil {
 		return nil, err
@@ -143,7 +204,7 @@ func (a *App) ListItemIcons() ([]string, error) {
 
 // ItemDisplayVariant is the item display showing display's model with icon ("" keeps its own) and
 // shot visual (-1 keeps its own). When the client has none, it is added to ItemDisplayInfo.dbc in
-// Meld's patch (the game closed around it on Windows); added says so.
+// Meld's patch, queued while the game runs on Windows; added says so.
 func (a *App) ItemDisplayVariant(display int, icon string, visual int) (vmangos.IconDisplay, error) {
 	dataDir, err := a.clientDataDir()
 	if err != nil {
@@ -163,6 +224,11 @@ func (a *App) ItemDisplayVariant(display int, icon string, visual int) (vmangos.
 // EquipBonuses lists the bonuses an item's Equip effect can give (healing, spell damage, crit…) with
 // the client's spell for each amount, for the item editor's Stats tab.
 func (a *App) EquipBonuses() ([]vmangos.EquipBonusKind, error) {
+	if realm, dataDir, err := a.lyraRealmAndData(); err != nil {
+		return nil, err
+	} else if realm != nil {
+		return vmangos.LyraEquipBonuses(realm, dataDir)
+	}
 	dataDir, err := a.clientDataDir()
 	if err != nil {
 		return nil, err
@@ -178,6 +244,9 @@ var sqlFilters = []runtime.FileFilter{{DisplayName: "SQL script (*.sql)", Patter
 // ExportItems asks where to save an SQL script of items and writes their item_template rows there.
 // Returns the path, or "" if cancelled.
 func (a *App) ExportItems(entries []int, suggested string) (string, error) {
+	if a.LyraCore().URL != "" {
+		return "", errors.New("SQL item import and export are not supported for LyraCore realms")
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return "", err
@@ -200,6 +269,9 @@ func (a *App) OpenItemsDialog() (string, error) {
 
 // PlanItemImport says what importing the items of the SQL script at path would write.
 func (a *App) PlanItemImport(path string) (vmangos.ItemImport, error) {
+	if a.LyraCore().URL != "" {
+		return vmangos.ItemImport{}, errors.New("SQL item import and export are not supported for LyraCore realms")
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return vmangos.ItemImport{}, err
@@ -214,6 +286,9 @@ func (a *App) PlanItemImport(path string) (vmangos.ItemImport, error) {
 // ImportItems writes the items of the SQL script at path into the world database and returns their
 // entries.
 func (a *App) ImportItems(path string) ([]int, error) {
+	if a.LyraCore().URL != "" {
+		return nil, errors.New("SQL item import and export are not supported for LyraCore realms")
+	}
 	server, _, err := a.serverForWrite()
 	if err != nil {
 		return nil, err
