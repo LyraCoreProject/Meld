@@ -787,7 +787,7 @@ wearers' stats and sends item queries to connected clients.
 The Creature Editor reads `game_creature_template`, `game_creature_display`,
 `game_creature_spell` and `game_creature_cast`. Creature writes use only
 `operator_apply_creature_edits`, including the flight-path window's NPC flag change.
-This needs [LyraCore PR 880](https://github.com/LyraCoreProject/LyraCore/pull/880).
+This needs LyraCore with [PR 880](https://github.com/LyraCoreProject/LyraCore/pull/880), on its `main` since 2026-10-29.
 The mapping follows [`world_import_creatures.rs` at `6175c248`](https://github.com/LyraCoreProject/LyraCore/blob/6175c24889203ca13a3a8d6b95e23d43e504fbbb/importer/src/world_import_creatures.rs).
 The reducer was verified at `f7c03e97a036601fe4b3085d34f9675521c92817`.
 
@@ -861,13 +861,25 @@ keeps its shared list reference. There is no creature loot editor and no delete 
 
 Successful writes clear the Go creature-list and display caches. Template saves and creation
 invalidate the frontend creature lists and display picker; template saves retain WDB pruning.
-The realm respawns affected live authored creatures, subject to its 256-creature batch cap.
+The realm respawns affected live authored creatures, subject to its 2,000-creature batch cap.
 It limits batches to 64 edits, each replacement list to 128 rows and the batch to 512 list rows.
 
 Equipment controls are unavailable because the realm has no equipment templates. Messages,
 Quests, the object and quest editors, and object loot show a not-yet-supported state. A binding
 that still needs VMaNGOS refuses with that message when a realm is set, even if a VMaNGOS folder
 is also configured.
+
+### Play Here and Launch on a LyraCore realm
+
+With a realm set, Game › Play Here and Launch's entry at the camera move the Game Login's
+character through the realm's `operator_teleport_character` (LyraCore
+[PR 918](https://github.com/LyraCoreProject/LyraCore/pull/918)), not SOAP and the VMaNGOS character
+database, so they need no VMaNGOS folder. `vmangos.TeleportLyraCharacter` makes the call. In the
+world, the realm teleports the character; logged out, it sets the saved position, so the next login
+enters there. Launch closes the game first, then calls `PlaceLyraCharacter`, which asks again for up
+to 10 seconds while the realm still holds the character online and refuses with "retry after
+logout". A Refusal (dead, a ghost, in combat, on a taxi flight, aboard a transport, a map that needs
+an Instance) reaches the status line as the realm's own message. The realm keeps `z` as sent.
 
 ### Meld's patch on a LyraCore client
 

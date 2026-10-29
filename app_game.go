@@ -177,6 +177,21 @@ func (a *App) LaunchGameAt(spot vmangos.CharacterSpot) (string, error) {
 		return "", err
 	}
 	character := sess.Login.Character
+	realm, err := a.lyraRealm()
+	if err != nil {
+		return "", err
+	}
+	if character != "" && realm != nil {
+		// On a LyraCore realm the realm sets the logged-out character's saved position.
+		if err := sess.StopGame(); err != nil {
+			return "", err
+		}
+		if err := vmangos.PlaceLyraCharacter(realm, character, spot); err != nil {
+			return "", err
+		}
+		a.flushPending()
+		return character, sess.StartGame()
+	}
 	if character == "" || sess.ServerRoot == "" {
 		a.flushPending()
 		return "", sess.StartGame()
@@ -194,16 +209,26 @@ func (a *App) LaunchGameAt(spot vmangos.CharacterSpot) (string, error) {
 // PlayHere moves the Game Login's character, in the world now, to spot (where the editor's camera is)
 // through the running world server's SOAP console, without closing the game. It returns the character
 // moved, or an error that says why it can't (no character or server set, the world server not running,
-// SOAP off, the character not in the world), so the editor can point to Launch instead.
+// SOAP off, the character not in the world), so the editor can point to Launch instead. With a
+// LyraCore realm set, the realm moves it (operator_teleport_character); a logged-out character then
+// enters there at its next login.
 func (a *App) PlayHere(spot vmangos.CharacterSpot) (string, error) {
 	sess, err := a.gameSession()
 	if err != nil {
 		return "", err
 	}
 	character := sess.Login.Character
-	switch {
-	case character == "":
+	if character == "" {
 		return "", errors.New("Game Login has no character to move")
+	}
+	realm, err := a.lyraRealm()
+	if err != nil {
+		return "", err
+	}
+	if realm != nil {
+		return character, vmangos.TeleportLyraCharacter(realm, character, spot)
+	}
+	switch {
 	case sess.ServerRoot == "":
 		return "", errors.New("no VMaNGOS server folder is set")
 	case vmangos.Supported(sess.Run) != nil:

@@ -69,7 +69,9 @@ that should open straight in the world is a feature on top of Benilla, not in it
   character select. Checked on 2026-10-15: Sizaro moved from Tanaris to Northshire Abbey and
   entered the world there, in Elwynn Forest.
 - **Play here** (Game › Play Here): with the game running and the Game Login's character in the
-  world, moves it to the same spot without closing anything. Meld writes the spot into a row of its
+  world, moves it to the same spot without closing anything. On a LyraCore realm it calls the realm's
+  `operator_teleport_character` instead of the steps below (docs/architecture/client.md, "Play Here and
+  Launch on a LyraCore realm"). Meld writes the spot into a row of its
   own in the world database's `game_tele` (named `meld_here`), then sends `reload game_tele` and
   `tele name <character> meld_here` through the world server's SOAP console, logged in as the Game
   Login's account, which needs GM level 3 (`internal/vmangos/soap.go`). SOAP is off by default:
