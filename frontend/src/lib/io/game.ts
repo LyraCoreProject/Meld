@@ -1,19 +1,37 @@
 // The game: which client Meld starts and how its window opens, the Benilla and VMaNGOS folders, Launch,
 // Play Here and the port commands.
-import { BrowseVmangosFolder, SaveTextDialog, WriteTextFile, GameClient, SetGameClient, GameWindow, SetGameWindow, BrowseBenillaFolder, SetBenillaPath, LaunchGame, LaunchGameAt, PlayHere, SetVmangosPath } from '../../../wailsjs/go/main/App'
+import {
+	BrowseVmangosFolder,
+	SaveTextDialog,
+	WriteTextFile,
+	GameClient,
+	SetGameClient,
+	GameWindow,
+	SetGameWindow,
+	BrowseBenillaFolder,
+	SetBenillaPath,
+	BuildBenilla,
+	LaunchGame,
+	LaunchGameAt,
+	PlayHere,
+	SetVmangosPath,
+} from '../../../wailsjs/go/main/App'
 import { guarded, hasBackend } from './backend'
 import type { Engine } from '../engine/Engine'
 import { editor, setStatus, ui } from '../state/editor.svelte'
 import { formatPortCoords } from './portCoords'
 import { areaName, loadAreas } from '../wow/areas'
-import { vmangos } from '../../../wailsjs/go/models'
+import { main, vmangos } from '../../../wailsjs/go/models'
+import { EventsOn } from '../../../wailsjs/runtime/runtime'
 import { compileRegion, regionName, regionUncompiled } from './compile'
 
 /** Reads which game client Meld uses into ui.gameClient (Game › Game Client). */
 export async function refreshGameClient() {
 	if (!hasBackend()) return
 	try {
-		ui.gameClient = (await GameClient()).client === 'benilla' ? 'benilla' : 'wow'
+		const info = await GameClient()
+		ui.gameClient = info.client === 'benilla' ? 'benilla' : 'wow'
+		ui.benilla = { path: info.benillaPath, built: info.benillaBuilt, ...info.build }
 		const w = await GameWindow()
 		ui.gameWindow = w.mode === 'windowed' || w.mode === 'fullscreen' ? w.mode : ''
 		if (w.resolution) ui.gameResolution = w.resolution
@@ -25,6 +43,11 @@ export async function refreshGameClient() {
 /** Picks the game Meld closes and opens around an export: the WoW client or Benilla. */
 export async function setGameClient(client: 'wow' | 'benilla') {
 	if (!hasBackend()) return
+	// An unbuilt Benilla is built first and picked when the build works.
+	if (client === 'benilla' && ui.benilla.path && !ui.benilla.built) {
+		await buildBenilla(true)
+		return
+	}
 	try {
 		await SetGameClient(client)
 		await refreshGameClient()
@@ -59,10 +82,55 @@ export async function chooseBenillaFolder() {
 		if (!dir) return
 		await SetBenillaPath(dir)
 		const info = await GameClient()
-		setStatus(info.benillaBuilt ? `Benilla folder: ${dir}. Pick Game › Benilla to use it.` : `Benilla folder: ${dir}, but it isn't built: run cargo build --release -p benilla there.`, 8000)
+		await refreshGameClient()
+		setStatus(info.benillaBuilt ? `Benilla folder: ${dir}. Pick Game › Benilla to use it.` : `Benilla folder: ${dir}. It isn't built yet: pick Game › Build Benilla.`, 8000)
 	} catch (e) {
 		setStatus(`${e}`, 8000)
 	}
+}
+
+// Whether the running build picks Benilla as the game client when it works (setGameClient).
+let pickWhenBuilt = false
+
+/**
+ * Builds Benilla in its folder (Game › Build Benilla), in the background: the menu shows the crate
+ * being compiled, and the status line the end. With `pick`, Benilla becomes the game client once built.
+ */
+export async function buildBenilla(pick = false) {
+	if (!hasBackend() || ui.benilla.building) return
+	// Set before the call: a build that fails at once can end before it returns.
+	pickWhenBuilt = pick
+	try {
+		await BuildBenilla()
+		if (ui.benilla.building) setStatus(`Building Benilla in ${ui.benilla.path}. The first build takes several minutes${pick ? '; Meld picks Benilla when it is done' : ''}.`, 8000)
+	} catch (e) {
+		pickWhenBuilt = false
+		setStatus(`${e}`, 8000)
+	}
+}
+
+/** Follows Game › Build Benilla's steps and end (the "benilla:build" event). Returns the unsubscribe. */
+export function watchBenillaBuild(): () => void {
+	if (!hasBackend()) return () => {}
+	return EventsOn('benilla:build', async (b: main.BenillaBuild) => {
+		const wasBuilding = ui.benilla.building
+		ui.benilla = { ...ui.benilla, ...b }
+		if (b.building || !wasBuilding) return
+		await refreshGameClient()
+		if (b.error) {
+			pickWhenBuilt = false
+			setStatus(`Benilla's build failed: ${b.error}. The session log has cargo's output.`, 15000)
+			return
+		}
+		const pick = pickWhenBuilt
+		pickWhenBuilt = false
+		if (!ui.benilla.built) {
+			setStatus(`cargo finished, but Meld finds no Benilla program in ${ui.benilla.path}/target/release.`, 15000)
+			return
+		}
+		setStatus('Benilla is built.', 6000)
+		if (pick) await setGameClient('benilla')
+	})
 }
 
 /**

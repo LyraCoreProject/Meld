@@ -817,6 +817,8 @@ export const ui = $state({
 	brushEditor: false,
 	/** The game Meld closes and opens around an export (Game › Game Client): Wow.exe or Benilla. */
 	gameClient: 'wow' as 'wow' | 'benilla',
+	/** Benilla's folder, whether it has a program built, and Game › Build Benilla's state (io/game.ts). */
+	benilla: { path: '', built: false, building: false, step: '', error: '' },
 	/** How the game's window opens when Meld starts it (Game › Game Window): '' the game's own setting. */
 	gameWindow: '' as '' | 'windowed' | 'fullscreen',
 	gameResolution: '1280x720',

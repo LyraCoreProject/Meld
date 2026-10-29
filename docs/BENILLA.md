@@ -21,7 +21,8 @@ into the world database), and Benilla is just another program that shows it.
   and `WOW_DATA` is also set for the user, so a Benilla started by hand finds it. Its old copy of the
   client data (`benilla\WoW\Data`) was removed on 2026-10-15.
 
-To rebuild after `git pull` in the Benilla folder: `cargo build --release -p benilla`.
+To rebuild after `git pull` in the Benilla folder: Game › Rebuild Benilla, or
+`cargo build --release -p benilla` there.
 
 ### Meld's launcher (`benilla-launcher/`)
 
@@ -49,8 +50,17 @@ that should open straight in the world is a feature on top of Benilla, not in it
 
 ## What Meld does with it (done)
 
-- **Preferences › Game client**: World of Warcraft (Wow.exe) or Benilla. Benilla needs its folder
-  (Preferences › Benilla Folder…) with a release build in it; Meld refuses otherwise and says why.
+- **Game › Game client**: World of Warcraft (Wow.exe) or Benilla. Benilla needs its folder
+  (Game › Benilla Folder…) with a release build in it. The Benilla entry says when the folder is
+  missing, the build is missing or failed, or a build is running.
+- **Game › Build Benilla** (Rebuild Benilla once built) runs `cargo build --release -p benilla` in the
+  folder, in the background (`App.BuildBenilla`, `game.BuildBenilla`). The menu item shows the crate
+  cargo is compiling, the status line says when it is done or gives cargo's first error, and the
+  session log gets cargo's output. Picking an unbuilt Benilla as the game client starts the build
+  and picks Benilla once it works. Meld finds cargo on PATH or in `~/.cargo/bin`, where rustup puts
+  it, since a Meld started from the desktop may not have the shell's PATH.
+- **Off Windows** cargo builds `benilla` and `meld-benilla` without `.exe`. `game.BenillaExe` looks
+  for those names first, then the `.exe` names (a build under Wine).
 - **Around an export** (region save, publish, zone, light and ground effect saves): Meld closes the
   chosen game (`benilla.exe` instead of `Wow.exe`), writes the patch, then starts it again
   (`internal/game/session.go`).

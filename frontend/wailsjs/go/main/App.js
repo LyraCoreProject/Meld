@@ -54,6 +54,10 @@ export function BrowseWowFolder() {
   return window['go']['main']['App']['BrowseWowFolder']();
 }
 
+export function BuildBenilla() {
+  return window['go']['main']['App']['BuildBenilla']();
+}
+
 export function CheckSpawnIDs(arg1) {
   return window['go']['main']['App']['CheckSpawnIDs'](arg1);
 }

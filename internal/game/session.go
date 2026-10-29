@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"Meld/internal/config"
@@ -63,14 +65,37 @@ type Session struct {
 	Stale *Stale
 }
 
+// hostOS is runtime.GOOS; tests change it to check the names on any machine.
+var hostOS = runtime.GOOS
+
+// imageFiles are the files a Windows image name can be on this machine: off Windows, the native
+// build's name without ".exe" first, as cargo builds Benilla there, then the name itself (under Wine).
+func imageFiles(image string) []string {
+	if hostOS == "windows" {
+		return []string{image}
+	}
+	return []string{strings.TrimSuffix(image, ".exe"), image}
+}
+
 // BenillaExe is the program Meld starts from a Benilla folder: Meld's launcher when it's built there
 // (`cargo build --release` in benilla-launcher puts it in Benilla's target folder), else Benilla's own.
+// With neither built it is where Benilla's own would be.
 func BenillaExe(folder string) string {
-	launcher := filepath.Join(folder, "target", "release", launcherImage)
-	if _, err := os.Stat(launcher); err == nil {
-		return launcher
+	release := filepath.Join(folder, "target", "release")
+	for _, image := range []string{launcherImage, benillaImage} {
+		for _, name := range imageFiles(image) {
+			if st, err := os.Stat(filepath.Join(release, name)); err == nil && !st.IsDir() {
+				return filepath.Join(release, name)
+			}
+		}
 	}
-	return filepath.Join(folder, "target", "release", benillaImage)
+	return filepath.Join(release, imageFiles(benillaImage)[0])
+}
+
+// BenillaBuilt says whether a Benilla folder has a program Meld can start.
+func BenillaBuilt(folder string) bool {
+	st, err := os.Stat(BenillaExe(folder))
+	return err == nil && !st.IsDir()
 }
 
 // envStarter is a Runner that can also start a program with extra environment variables.
@@ -221,7 +246,8 @@ func (s Session) startBenilla() error {
 	}
 	exe := BenillaExe(s.Benilla)
 	var err error
-	if r, ok := s.Run.(loggedStarter); ok && filepath.Base(exe) == launcherImage {
+	launcher := strings.TrimSuffix(filepath.Base(exe), ".exe") == strings.TrimSuffix(launcherImage, ".exe")
+	if r, ok := s.Run.(loggedStarter); ok && launcher {
 		// The launcher is a windowed program: no console beside the game, its log in a file.
 		err = r.StartLogged(s.Benilla, exe, LauncherLog(s.Benilla), env)
 	} else if r, ok := s.Run.(envStarter); ok {
