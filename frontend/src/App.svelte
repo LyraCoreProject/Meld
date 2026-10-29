@@ -44,7 +44,7 @@
 	import { offerFolderSetup } from './lib/io/folderSetup'
 	import { startSessionLog } from './lib/io/sessionLog'
 	import { onMount, untrack } from 'svelte'
-	import { refreshGameClient } from './lib/io/game'
+	import { refreshGameClient, watchBenillaBuild } from './lib/io/game'
 	import { initWow } from './lib/wow/api'
 	import { defaultLayerTextures } from './lib/wow/defaults'
 	import { LAYERS } from './lib/terrain/layers'
@@ -95,6 +95,7 @@
 	$effect(() => {
 		if (hasBackend()) void SetUnsaved(unsaved)
 	})
+	onMount(() => watchBenillaBuild())
 	onMount(() => {
 		if (!hasBackend()) return
 		return EventsOn('app:close', () => {

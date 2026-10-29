@@ -35,6 +35,8 @@ export function BrowseVmangosFolder():Promise<string>;
 
 export function BrowseWowFolder():Promise<string>;
 
+export function BuildBenilla():Promise<void>;
+
 export function CheckSpawnIDs(arg1:vmangos.SpawnIDQuery):Promise<vmangos.SpawnIDReport>;
 
 export function ClassLevelStats(arg1:number,arg2:number,arg3:number):Promise<Array<vmangos.ClassLevelStats>>;

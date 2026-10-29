@@ -88,6 +88,18 @@ type GameClientInfo struct {
 	BenillaPath string `json:"benillaPath"`
 	// BenillaBuilt says the Benilla folder has a release build of the program.
 	BenillaBuilt bool `json:"benillaBuilt"`
+	// Build is Game › Build Benilla's state.
+	Build BenillaBuild `json:"build"`
+}
+
+// BenillaBuild is the state of Game › Build Benilla, also sent as the "benilla:build" event at each
+// step and at the end.
+type BenillaBuild struct {
+	Building bool `json:"building"`
+	// Step is the crate cargo is compiling.
+	Step string `json:"step"`
+	// Error is why the last build failed; "" after a build that worked or before any.
+	Error string `json:"error"`
 }
 
 // GameClient says which game client Meld uses.
@@ -99,10 +111,63 @@ func (a *App) GameClient() GameClientInfo {
 		info.Client = "benilla"
 	}
 	if info.BenillaPath != "" {
-		_, err := os.Stat(game.BenillaExe(info.BenillaPath))
-		info.BenillaBuilt = err == nil
+		info.BenillaBuilt = game.BenillaBuilt(info.BenillaPath)
 	}
+	a.benillaMu.Lock()
+	info.Build = a.benillaBuild
+	a.benillaMu.Unlock()
 	return info
+}
+
+// BuildBenilla starts building Benilla in its folder (game.BuildBenilla) and returns. The
+// "benilla:build" event reports each step and the end; the output goes to the session log.
+func (a *App) BuildBenilla() error {
+	a.cfgMu.Lock()
+	folder := a.cfg.BenillaPath
+	a.cfgMu.Unlock()
+	if folder == "" {
+		return errors.New("choose the Benilla folder first (Game › Benilla Folder…)")
+	}
+	cargo, err := game.Cargo()
+	if err != nil {
+		return err
+	}
+	a.benillaMu.Lock()
+	if a.benillaBuild.Building {
+		a.benillaMu.Unlock()
+		return errors.New("Benilla is already building")
+	}
+	a.benillaBuild = BenillaBuild{Building: true}
+	a.benillaMu.Unlock()
+	a.sendBenillaBuild()
+	go func() {
+		err := game.BuildBenilla(vmangos.OSRunner{}, cargo, folder, func(line string) {
+			if a.slog != nil {
+				_ = a.slog.Append([]string{time.Now().Format("15:04:05") + " benilla build: " + line})
+			}
+			if step := game.BuildStep(line); step != "" {
+				a.benillaMu.Lock()
+				a.benillaBuild.Step = step
+				a.benillaMu.Unlock()
+				a.sendBenillaBuild()
+			}
+		})
+		a.benillaMu.Lock()
+		a.benillaBuild = BenillaBuild{}
+		if err != nil {
+			a.benillaBuild.Error = err.Error()
+		}
+		a.benillaMu.Unlock()
+		a.sendBenillaBuild()
+	}()
+	return nil
+}
+
+func (a *App) sendBenillaBuild() {
+	a.benillaMu.Lock()
+	b := a.benillaBuild
+	a.benillaMu.Unlock()
+	runtime.EventsEmit(a.ctx, "benilla:build", b)
 }
 
 // SetGameClient picks the game Meld closes and opens around an export: "wow" or "benilla". Benilla
@@ -115,10 +180,10 @@ func (a *App) SetGameClient(client string) error {
 	defer a.cfgMu.Unlock()
 	if client == "benilla" {
 		if a.cfg.BenillaPath == "" {
-			return errors.New("choose the Benilla folder first (Settings › Benilla Folder…)")
+			return errors.New("choose the Benilla folder first (Game › Benilla Folder…)")
 		}
-		if _, err := os.Stat(game.BenillaExe(a.cfg.BenillaPath)); err != nil {
-			return fmt.Errorf("Benilla isn't built in %s: run cargo build --release -p benilla there", a.cfg.BenillaPath)
+		if !game.BenillaBuilt(a.cfg.BenillaPath) {
+			return fmt.Errorf("Benilla isn't built in %s: pick Game › Build Benilla", a.cfg.BenillaPath)
 		}
 	}
 	value := ""

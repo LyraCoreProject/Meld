@@ -57,6 +57,9 @@ type App struct {
 	// serverBusy is whether UpdateRegionServer or PublishVmangosMap runs: both rewrite the server's map
 	// data, so a second one is refused (#486).
 	serverBusy atomic.Bool
+	// benillaMu guards benillaBuild, the state of Game › Build Benilla (app_game.go).
+	benillaMu    sync.Mutex
+	benillaBuild BenillaBuild
 
 	// The probes' throwaway client (app_sandbox.go, #368). sandboxData, under cfgMu, is its Data
 	// folder while it is on; the rest is under sandboxMu.

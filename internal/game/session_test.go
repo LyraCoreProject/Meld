@@ -44,6 +44,13 @@ func (f *fakeRunner) Start(dir, name string, args ...string) error {
 
 func (f *fakeRunner) Running(image string) bool { return f.running[image] }
 
+// onHost makes the program names those of goos for one test.
+func onHost(t *testing.T, goos string) {
+	old := hostOS
+	hostOS = goos
+	t.Cleanup(func() { hostOS = old })
+}
+
 func session(run vmangos.Runner, server string) Session {
 	return Session{ClientRoot: "client", ServerRoot: server, Run: run, Ready: func(int) bool { return true }}
 }
@@ -239,6 +246,7 @@ func (f *envRunner) StartEnv(dir, name string, env []string, args ...string) err
 // With Benilla as the game, a session closes benilla.exe (not Wow.exe) and starts it from its folder
 // with the install's Data folder and the login in its environment.
 func TestSessionWithBenilla(t *testing.T) {
+	onHost(t, "windows")
 	r := &envRunner{fakeRunner: fakeRunner{running: map[string]bool{"benilla.exe": true, "Wow.exe": true}}}
 	s := Session{ClientRoot: `C:\WoW`, Benilla: `C:\benilla`, Login: config.Login{Account: "MELD", Password: "secret"}, Run: r}
 	c, err := s.Stop()
@@ -296,6 +304,7 @@ func TestStopGameLeavesTheServersRunning(t *testing.T) {
 }
 
 func TestBenillaStartsThroughTheLauncherOnceBuilt(t *testing.T) {
+	onHost(t, "windows")
 	folder := t.TempDir()
 	release := filepath.Join(folder, "target", "release")
 	if err := os.MkdirAll(release, 0o755); err != nil {

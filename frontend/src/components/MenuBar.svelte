@@ -4,7 +4,8 @@
 	import { engineRef } from '../lib/state/engineRef'
 	import { hasBackend } from '../lib/io/backend'
 	import { compileRegion, exportSpawnSql } from '../lib/io/compile'
-	import { chooseBenillaFolder, launchGame, playHere, setGameClient, setGameWindow, chooseVmangosFolder, exportPortCoords } from '../lib/io/game'
+	import { benillaLabel } from '../lib/io/benillaLabel'
+	import { buildBenilla, chooseBenillaFolder, launchGame, playHere, setGameClient, setGameWindow, chooseVmangosFolder, exportPortCoords } from '../lib/io/game'
 	import { exportAlphamap, importAlphamap, exportHeightmap, exportNormalMap, writeMinimapTiles } from '../lib/io/images'
 	import { exportDoodadBrush, exportObjectList, importDoodadBrushes, importObjectList } from '../lib/io/lists'
 	import { requestRevert } from '../lib/io/mapio'
@@ -608,12 +609,18 @@
 				...radios<'wow' | 'benilla'>(
 					[
 						['World of Warcraft (Wow.exe)', 'wow'],
-						['Benilla', 'benilla'],
+						[benillaLabel(ui.benilla), 'benilla'],
 					],
 					() => ui.gameClient,
 					(v) => void setGameClient(v),
 				),
 				{ kind: 'action', label: 'Benilla Folder…', disabled: !hasBackend(), run: chooseBenillaFolder },
+				{
+					kind: 'action',
+					label: ui.benilla.building ? `Building Benilla…${ui.benilla.step ? ` (${ui.benilla.step})` : ''}` : ui.benilla.built ? 'Rebuild Benilla' : 'Build Benilla',
+					disabled: !hasBackend() || !ui.benilla.path || ui.benilla.building,
+					run: () => buildBenilla(),
+				},
 				{ kind: 'header', label: 'Game window (when Meld starts it)' },
 				...radios<'' | 'windowed' | 'fullscreen'>(
 					[
