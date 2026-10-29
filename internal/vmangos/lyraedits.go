@@ -264,7 +264,8 @@ func ListLyraCreatureTemplates(realm *lyracore.Realm, dataDir string) ([]Creatur
 			c.Scale = 1
 		}
 		look := tables.creatureLook(uint32(c.Display), gear{sheath: sheathMelee})
-		c.Model, c.Look, c.DisplayScale = look.model, look.look.Query(), look.scale
+		// Realm scales already include the client display scale.
+		c.Model, c.Look, c.DisplayScale = look.model, look.look.Query(), 1
 		out = append(out, c)
 		return nil
 	})

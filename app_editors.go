@@ -126,12 +126,11 @@ func (a *App) ObjectModel(display int) (string, error) {
 	return vmangos.ObjectModel(dataDir, display)
 }
 
-// ReadCreature reads a creature template's row (its newest patch) for the creature editor.
 func (a *App) ReadCreature(entry int) (vmangos.TemplateRecord, error) {
 	if realm, err := a.lyraRealm(); err != nil {
 		return vmangos.TemplateRecord{}, err
 	} else if realm != nil {
-		return vmangos.ReadLyraVendorCreature(realm, entry)
+		return vmangos.ReadLyraCreature(realm, entry)
 	}
 	server, _, err := a.serverAndData()
 	if err != nil {
@@ -140,22 +139,37 @@ func (a *App) ReadCreature(entry int) (vmangos.TemplateRecord, error) {
 	return vmangos.ReadCreature(server, entry)
 }
 
-// SaveCreature writes a creature template's changed values (by column) into the world database
-// and returns the SQL it ran.
-func (a *App) SaveCreature(entry, patch int, values map[string]string) (string, error) {
-	if a.LyraCore().URL != "" {
-		return "", fmt.Errorf("LyraCore creature templates are read-only in Meld; only the Shop tab can be saved")
+// SaveCreature returns the SQL or reducer arguments, unsupported values, or a Refusal.
+func (a *App) SaveCreature(entry, patch int, values map[string]string) (TemplateSaved, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return TemplateSaved{}, err
+	} else if realm != nil {
+		if a.sandboxed() {
+			return TemplateSaved{}, errSandboxed
+		}
+		dataDir, err := a.clientDataDir()
+		if err != nil {
+			return TemplateSaved{}, err
+		}
+		res, err := vmangos.SaveLyraCreature(realm, dataDir, entry, values)
+		if err == nil && res.Changed > 0 {
+			a.stale.AddCreature(uint32(entry))
+			a.forgetStale()
+		}
+		saved, err := templateSaved(res.SQL, err)
+		saved.Live, saved.Skipped = res.Live, res.Skipped
+		return saved, err
 	}
 	server, _, err := a.serverForWrite()
 	if err != nil {
-		return "", err
+		return TemplateSaved{}, err
 	}
 	sql, err := vmangos.SaveCreature(server, entry, patch, values)
 	if err == nil {
 		a.stale.AddCreature(uint32(entry))
 		a.forgetStale()
 	}
-	return sql, err
+	return templateSaved(sql, err)
 }
 
 // forgetStale takes the saved templates out of the game's caches now when the game is closed, so a
@@ -490,9 +504,11 @@ func (a *App) Factions() ([]vmangos.FactionInfo, error) {
 	return vmangos.Factions(dataDir)
 }
 
-// ClassLevelStats reads what the server gives a creature of a unit class at each level from from to
-// to (creature_classlevelstats), for the creature guide's stats step.
+// LyraCore has per-entry final stats, so a class-level query is unavailable.
 func (a *App) ClassLevelStats(class, from, to int) ([]vmangos.ClassLevelStats, error) {
+	if a.LyraCore().URL != "" {
+		return nil, fmt.Errorf("class-level stats are not available on a LyraCore realm; its stats belong to individual creatures")
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return nil, err
@@ -560,9 +576,16 @@ func (a *App) SaveObjectDisplaySounds(display int, sounds []int) (SoundsSaved, e
 	return SoundsSaved{Changed: err == nil, Waiting: waiting}, err
 }
 
-// CreateCreature adds a creature template named name, a copy of template base (or the defaults
-// for 0), and returns its entry.
+// A zero base uses defaults; otherwise copy the base template. Returns the allocated entry.
 func (a *App) CreateCreature(base int, name string) (int, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return 0, err
+	} else if realm != nil {
+		if a.sandboxed() {
+			return 0, errSandboxed
+		}
+		return vmangos.CreateLyraCreature(realm, base, name)
+	}
 	server, _, err := a.serverForWrite()
 	if err != nil {
 		return 0, err
@@ -570,10 +593,13 @@ func (a *App) CreateCreature(base int, name string) (int, error) {
 	return vmangos.CreateCreature(server, base, name)
 }
 
-// ListDisplays lists every creature display, dressed, with the creatures that use it, for the
-// creature editor's display picker. The world database is optional: without it the displays come
-// without their creatures.
+// VMaNGOS is optional for display-use counts; a configured realm must answer the reads.
 func (a *App) ListDisplays() ([]vmangos.DisplayEntry, error) {
+	if realm, dataDir, err := a.lyraRealmAndData(); err != nil {
+		return nil, err
+	} else if realm != nil {
+		return vmangos.ListLyraDisplays(realm, dataDir)
+	}
 	a.cfgMu.Lock()
 	server := a.cfg.VmangosPath
 	a.cfgMu.Unlock()

@@ -1,10 +1,12 @@
 <script lang="ts">
+	import { forgetCreatureTemplates } from './SpawnBrowser.svelte'
 	import { idMenu, idOf } from '../lib/ui/copyId'
 	import { dialogFocus } from '../lib/ui/dialogFocus'
 	import { leaveField, takeEscape } from '../lib/state/escape'
-	import { ClassLevelStats, CreateCreature, EquipmentFor, Factions, ReadCreature, SaveCreature, SearchCreatures, SpawnLook } from '../../wailsjs/go/main/App'
+	import { LyraCore, ClassLevelStats, CreateCreature, EquipmentFor, Factions, ReadCreature, SaveCreature, SearchCreatures, SpawnLook } from '../../wailsjs/go/main/App'
 	import type { vmangos } from '../../wailsjs/go/models'
 	import { untrack } from 'svelte'
+	import { checkRefused } from '../lib/ui/templateEditor.svelte'
 	import { editor, setStatus, ui } from '../lib/state/editor.svelte'
 	import { askConfirm } from '../lib/state/confirm'
 	import { creatureTemplateOf } from '../lib/world/spawnEdits'
@@ -15,10 +17,21 @@
 	import ItemIcon from './ItemIcon.svelte'
 	import WeaponPicker, { loadWeapons, SLOTS } from './WeaponPicker.svelte'
 
-	// The Creatures workspace (#132, World › Creatures…): the world database's creatures to find and
-	// open in the creature editor, and a guide that makes a new one step by step: who it is, whom it
-	// fights, how it looks, how strong it is. The guide writes the creature_template row at the end
-	// (CreateCreature, then SaveCreature with the choices), so nothing is written until Make creature.
+	let realm = $state(false)
+	$effect(() => {
+		if (!ui.creatures) return
+		let cancelled = false
+		void LyraCore()
+			.then((r) => {
+				if (!cancelled) realm = !!r.url
+			})
+			.catch((err) => {
+				if (!cancelled) error = String(err)
+			})
+		return () => {
+			cancelled = true
+		}
+	})
 
 	type Reaction = 'friendly' | 'neutral' | 'hostile'
 	type Draft = {
@@ -65,10 +78,17 @@
 	let step = $state(0)
 	let error = $state('')
 	let making = $state(false)
+	let pendingEntry = $state<number | null>(null)
 	let made = $state<{ entry: number; values: Record<string, string> } | null>(null)
 
 	async function close() {
-		if (step > 0 && !made && draft.name && !(await askConfirm('Leave the guide? The creature is not made yet.', { title: 'Leave the guide', ok: 'Leave' }))) return
+		if (
+			step > 0 &&
+			!made &&
+			draft.name &&
+			!(await askConfirm(pendingEntry ? `Leave the guide? Creature ${pendingEntry} exists, but its choices have not all been saved.` : 'Leave the guide? The creature is not made yet.', { title: 'Leave the guide', ok: 'Leave' }))
+		)
+			return
 		ui.creatures = false
 	}
 
@@ -81,6 +101,7 @@
 		draft = fresh()
 		step = 0
 		made = null
+		pendingEntry = null
 		error = ''
 	}
 
@@ -128,7 +149,6 @@
 		if (first && !(pickedFaction && pickedFaction.alliance === SIDES[i].alliance && pickedFaction.horde === SIDES[i].horde)) draft.faction = first.id
 	}
 
-	// Step 3: the look shown, the picked display dressed in the picked gear.
 	let hovered = $state<vmangos.DisplayEntry | null>(null)
 	let slot = $state(0)
 	// The names and displays of the holdable items, for the gear's names and icons (read once).
@@ -146,7 +166,7 @@
 	let look = $state<vmangos.LookResult | null>(null)
 	$effect(() => {
 		const items = draft.items
-		if (!items.some((i) => i > 0)) {
+		if (realm || !items.some((i) => i > 0)) {
 			equipment = 0
 			return
 		}
@@ -165,12 +185,11 @@
 			.then((l) => (look = l))
 			.catch(() => (look = null))
 	})
-	const preview = $derived(hovered ? { model: hovered.model, look: hovered.look, scale: hovered.scale * draft.scale } : look ? { model: look.model, look: look.look, scale: draft.scale * (look.displayScale || 1) } : null)
+	const preview = $derived(hovered ? { model: hovered.model, look: hovered.look, scale: (realm ? 1 : hovered.scale) * draft.scale } : look ? { model: look.model, look: look.look, scale: draft.scale * (look.displayScale || 1) } : null)
 
-	// Step 4: what the server gives the class at the level range, times the multipliers.
 	let stats = $state<vmangos.ClassLevelStats[]>([])
 	$effect(() => {
-		if (!ui.creatures) return
+		if (!ui.creatures || realm) return
 		const c = draft.unitClass,
 			a = draft.levelMin,
 			b = Math.max(draft.levelMin, draft.levelMax)
@@ -192,10 +211,9 @@
 		true,
 	])
 
-	/** The creature_template values the guide's choices come to. */
 	function values(): Record<string, string> {
 		const d = draft
-		return {
+		const v: Record<string, string> = {
 			name: d.name.trim(),
 			subname: d.subname.trim(),
 			npc_flags: String(d.npcFlags),
@@ -214,6 +232,8 @@
 			armor_multiplier: String(d.armorMul),
 			equipment_id: String(equipment),
 		}
+		if (realm) for (const k of ['unit_class', 'health_multiplier', 'damage_multiplier', 'armor_multiplier', 'equipment_id']) delete v[k]
+		return v
 	}
 
 	async function make() {
@@ -221,14 +241,17 @@
 		error = ''
 		try {
 			const v = values()
-			const entry = await CreateCreature(0, v.name)
+			const entry = pendingEntry ?? (await CreateCreature(0, v.name))
+			pendingEntry = entry
 			const rec = await ReadCreature(entry)
-			await SaveCreature(entry, rec.patch, v)
+			const result = checkRefused(await SaveCreature(entry, rec.patch, v))
 			forgetCreatureDisplays()
-			made = { entry, values: { ...rec.values, ...v } }
-			setStatus(`Made creature ${entry}, ${v.name}. Restart the world server to see it in the game.`, 10000)
+			forgetCreatureTemplates()
+			const fresh = result.live ? await ReadCreature(entry) : rec
+			made = { entry, values: result.live ? fresh.values : { ...rec.values, ...v } }
+			setStatus(`Made creature ${entry}, ${v.name}. ${result.live ? 'Live now.' : 'Restart the world server to see it in the game.'}`, 10000)
 		} catch (err) {
-			error = String(err)
+			error = `${pendingEntry ? `Creature ${pendingEntry} exists. Saving its choices failed; retry to update that entry. ` : ''}${String(err)}`
 		} finally {
 			making = false
 		}
@@ -350,15 +373,15 @@
 							<div class="pick">
 								<p class="dim">Pick its body (a display); hover a tile to see it on the right.</p>
 								<DisplayPicker selected={draft.display} onpick={(d) => (draft.display = d.id)} onhover={(d) => (hovered = d)} />
-								<h3>Held items</h3>
-								<span class="row">
-									<select bind:value={slot}>
-										{#each SLOTS as s, i (s)}<option value={i}>{s}{draft.items[i] ? ` (${itemName(draft.items[i])})` : ''}</option>{/each}
-									</select>
-									{#if draft.items[slot]}<ItemIcon displayId={weaponDisplays.get(draft.items[slot]) ?? 0} size={14} />{/if}
-									<button disabled={!draft.items[slot]} onclick={() => (draft.items[slot] = 0)}>Empty hand</button>
-								</span>
-								<WeaponPicker which={slot} selected={draft.items[slot]} onpick={(e) => (draft.items[slot] = e)} />
+								{#if realm}<p>Equipment templates are not available on a LyraCore realm.</p>{:else}<h3>Held items</h3>
+									<span class="row">
+										<select bind:value={slot}>
+											{#each SLOTS as s, i (s)}<option value={i}>{s}{draft.items[i] ? ` (${itemName(draft.items[i])})` : ''}</option>{/each}
+										</select>
+										{#if draft.items[slot]}<ItemIcon displayId={weaponDisplays.get(draft.items[slot]) ?? 0} size={14} />{/if}
+										<button disabled={!draft.items[slot]} onclick={() => (draft.items[slot] = 0)}>Empty hand</button>
+									</span>
+									<WeaponPicker which={slot} selected={draft.items[slot]} onpick={(e) => (draft.items[slot] = e)} />{/if}
 							</div>
 							<div class="show">
 								{#if preview}
@@ -370,36 +393,37 @@
 							</div>
 						</div>
 					{:else if step === 3}
-						<p class="dim">The server gives a creature its health, damage and armour from its class and level; the multipliers make it tougher or weaker. The rank set them; change them as you like.</p>
-						<div class="sides">
-							{#each CLASSES as [v, name, what] (v)}
-								<label class="check"><input type="radio" name="class" checked={draft.unitClass === v} onchange={() => (draft.unitClass = v)} /><ClassIcon id={v} /> {name} <span class="dim">({what})</span></label>
-							{/each}
-						</div>
-						<span class="row">
-							<label>Health × <input type="number" min="0.01" step="0.1" value={draft.healthMul} oninput={(e) => (draft.healthMul = num(e))} /></label>
-							<label>Damage × <input type="number" min="0" step="0.1" value={draft.damageMul} oninput={(e) => (draft.damageMul = num(e))} /></label>
-							<label>Armour × <input type="number" min="0" step="0.1" value={draft.armorMul} oninput={(e) => (draft.armorMul = num(e))} /></label>
-						</span>
-						<table>
-							<thead><tr><th>Level</th><th>Health</th><th>Mana</th><th>Damage a hit</th><th>Armour</th></tr></thead>
-							<tbody>
-								{#each statRows as s (s.level)}
-									<tr>
-										<td>{s.level}</td>
-										<td>{Math.round(s.health * draft.healthMul)}</td>
-										<td>{s.mana}</td>
-										<td>{Math.round(s.meleeDamage * draft.damageMul)}</td>
-										<td>{Math.round(s.armor * draft.armorMul)}</td>
-									</tr>
-								{:else}
-									<tr><td colspan="5" class="dim">The server has no stats for this class and level.</td></tr>
+						{#if realm}<p>Class-level stats are not available on a LyraCore realm. New creatures start with 100 health, 1–2 damage and no armour. Edit their final stats in the creature editor after creation.</p>{:else}
+							<p class="dim">The server gives a creature its health, damage and armour from its class and level; the multipliers make it tougher or weaker. The rank set them; change them as you like.</p>
+							<div class="sides">
+								{#each CLASSES as [v, name, what] (v)}
+									<label class="check"><input type="radio" name="class" checked={draft.unitClass === v} onchange={() => (draft.unitClass = v)} /><ClassIcon id={v} /> {name} <span class="dim">({what})</span></label>
 								{/each}
-							</tbody>
-						</table>
+							</div>
+							<span class="row">
+								<label>Health × <input type="number" min="0.01" step="0.1" value={draft.healthMul} oninput={(e) => (draft.healthMul = num(e))} /></label>
+								<label>Damage × <input type="number" min="0" step="0.1" value={draft.damageMul} oninput={(e) => (draft.damageMul = num(e))} /></label>
+								<label>Armour × <input type="number" min="0" step="0.1" value={draft.armorMul} oninput={(e) => (draft.armorMul = num(e))} /></label>
+							</span>
+							<table>
+								<thead><tr><th>Level</th><th>Health</th><th>Mana</th><th>Damage a hit</th><th>Armour</th></tr></thead>
+								<tbody>
+									{#each statRows as s (s.level)}
+										<tr>
+											<td>{s.level}</td>
+											<td>{Math.round(s.health * draft.healthMul)}</td>
+											<td>{s.mana}</td>
+											<td>{Math.round(s.meleeDamage * draft.damageMul)}</td>
+											<td>{Math.round(s.armor * draft.armorMul)}</td>
+										</tr>
+									{:else}
+										<tr><td colspan="5" class="dim">The server has no stats for this class and level.</td></tr>
+									{/each}
+								</tbody>
+							</table>{/if}
 					{:else}
 						{#if made}
-							<p>Made <b>{draft.name}</b>, entry {made.entry}. It is in the world database; restart the world server for the game to know it.</p>
+							<p>Made <b>{draft.name}</b>, entry {made.entry}. {realm ? 'It is live in the realm.' : 'It is in the world database; restart the world server for the game to know it.'}</p>
 							<span class="row">
 								<button class="active" onclick={place}>Place in world</button>
 								<button onclick={() => made && open(made.entry)}>Open in the creature editor</button>

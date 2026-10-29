@@ -39,8 +39,10 @@ func (a *App) SpawnLook(display, equipment, stand, emote, sheath int) (vmangos.L
 		if err != nil {
 			return vmangos.LookResult{}, err
 		}
-		// A LyraCore realm has no equipment templates.
-		return vmangos.CreatureLook("", dataDir, display, 0, stand, emote, sheath)
+		// Realm scales already include the client display scale.
+		look, err := vmangos.CreatureLook("", dataDir, display, 0, stand, emote, sheath)
+		look.DisplayScale = 1
+		return look, err
 	}
 	server, dataDir, err := a.serverAndData()
 	if err != nil {
@@ -49,8 +51,10 @@ func (a *App) SpawnLook(display, equipment, stand, emote, sheath int) (vmangos.L
 	return vmangos.CreatureLook(server, dataDir, display, equipment, stand, emote, sheath)
 }
 
-// ListWeapons lists every item of the world database a creature can hold, for the gear picker.
 func (a *App) ListWeapons() ([]vmangos.WeaponEntry, error) {
+	if a.LyraCore().URL != "" {
+		return nil, errors.New("equipment templates are not available on a LyraCore realm")
+	}
 	server, dataDir, err := a.serverAndData()
 	if err != nil {
 		return nil, err
@@ -58,8 +62,11 @@ func (a *App) ListWeapons() ([]vmangos.WeaponEntry, error) {
 	return vmangos.ListWeapons(server, dataDir)
 }
 
-// EquipmentItems are the main hand, off hand and ranged items of an equipment template.
+// Items are ordered main hand, off hand, ranged.
 func (a *App) EquipmentItems(id int) ([3]int, error) {
+	if a.LyraCore().URL != "" {
+		return [3]int{}, errors.New("equipment templates are not available on a LyraCore realm")
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return [3]int{}, err
@@ -67,9 +74,11 @@ func (a *App) EquipmentItems(id int) ([3]int, error) {
 	return vmangos.EquipmentItems(server, id)
 }
 
-// EquipmentDisplays are the display IDs of the held items of each equipment template in ids, for
-// the pickers' icons.
+// Display IDs are ordered main hand, off hand, ranged.
 func (a *App) EquipmentDisplays(ids []int) (map[int][3]int, error) {
+	if a.LyraCore().URL != "" {
+		return nil, errors.New("equipment templates are not available on a LyraCore realm")
+	}
 	server, _, err := a.serverAndData()
 	if err != nil {
 		return nil, err
@@ -77,9 +86,11 @@ func (a *App) EquipmentDisplays(ids []int) (map[int][3]int, error) {
 	return vmangos.EquipmentDisplays(server, ids)
 }
 
-// EquipmentFor is the equipment template with these items (main hand, off hand, ranged), made
-// in the world database when none has them; 0 for none.
+// Creates a missing template for main hand, off hand and ranged; all zero returns 0.
 func (a *App) EquipmentFor(items [3]int) (int, error) {
+	if a.LyraCore().URL != "" {
+		return 0, errors.New("equipment templates are not available on a LyraCore realm")
+	}
 	server, _, err := a.serverForWrite()
 	if err != nil {
 		return 0, err

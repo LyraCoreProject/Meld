@@ -12,3 +12,8 @@ test('stays quiet when both are set or the user said not to ask', () => {
 	expect(folderGaps('a', 'b', false)).toBeNull()
 	expect(folderGaps('', '', true)).toBeNull()
 })
+
+test('does not ask for the server folder with a LyraCore realm set', () => {
+	expect(folderGaps('a', '', false, true)).toBeNull()
+	expect(folderGaps('', '', false, true)).toEqual({ client: true, server: false })
+})

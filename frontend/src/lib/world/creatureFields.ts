@@ -302,6 +302,11 @@ export const CREATURE_FIELD_GROUPS: CreatureFieldGroup[] = [
 	{
 		title: 'Combat',
 		fields: [
+			{ col: 'health_min', label: 'Health at minimum level' },
+			{ col: 'health_max', label: 'Health at maximum level' },
+			{ col: 'damage_min', label: 'Minimum damage' },
+			{ col: 'damage_max', label: 'Maximum damage' },
+			{ col: 'armor', label: 'Armour' },
 			{ col: 'health_multiplier', label: 'Health ×' },
 			{ col: 'mana_multiplier', label: 'Mana ×' },
 			{ col: 'armor_multiplier', label: 'Armor ×' },

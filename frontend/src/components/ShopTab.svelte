@@ -104,7 +104,7 @@
 	{#if (npcFlags & VENDOR_FLAG) === 0}
 		<p class="warn">
 			This creature has no Vendor flag, so the server opens no shop for it.
-			{#if realm}<span class="dim">Changing creature flags is not supported for LyraCore realms.</span>{:else}<button onclick={onvendorflag}>Set the flag</button><span class="dim">(saved with Save creature)</span>{/if}
+			<button onclick={onvendorflag}>Set the flag</button><span class="dim">(saved with Save creature)</span>
 		</p>
 	{/if}
 

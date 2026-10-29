@@ -143,7 +143,11 @@ func ReadLyraSpawns(realm *lyracore.Realm, dataDir, mapName string, x, y, size i
 	for i, s := range rows {
 		out[i] = regionSpawn(s, x, y, tables, [3]heldItem{})
 		if s.Kind != KindObject {
-			// LyraCore has no sheath state: a creature's weapons, when it has any, stay put away.
+			// Realm scales already include the client display scale.
+			out[i].Scale, out[i].DisplayScale = 1, 1
+			if s.scale > 0 {
+				out[i].Scale = s.scale
+			}
 			out[i].SheathState = 1
 		}
 	}

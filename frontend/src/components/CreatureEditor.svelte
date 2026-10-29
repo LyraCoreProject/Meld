@@ -1,9 +1,10 @@
 <script lang="ts">
+	import { forgetCreatureTemplates } from './SpawnBrowser.svelte'
 	import { editor, setStatus, ui } from '../lib/state/editor.svelte'
 	import { engineRef } from '../lib/state/engineRef'
 	import { CreateCreature, ModelAnimations, ReadCreature, SaveCreature, SpawnLook } from '../../wailsjs/go/main/App'
 	import type { vmangos } from '../../wailsjs/go/models'
-	import { TemplateEditor } from '../lib/ui/templateEditor.svelte'
+	import { TemplateEditor, checkRefused } from '../lib/ui/templateEditor.svelte'
 	import { fieldGroups, withBit } from '../lib/world/creatureFields'
 	import { creatureTemplateOf, selectSpawn } from '../lib/world/spawnEdits'
 	import { spawnKey } from '../lib/world/SpawnLayer'
@@ -17,11 +18,6 @@
 	import SpawnFields from './SpawnFields.svelte'
 	import SpellsTab from './SpellsTab.svelte'
 	import TemplateFields from './TemplateFields.svelte'
-
-	// The creature editor: one creature full screen. The left shows it big and animated; the right
-	// edits the spawn it was opened from (each change an undo step, saved with the region's spawns)
-	// and its creature template, every column of creature_template, saved to the world database with
-	// Save. A new creature starts here too, from scratch or as a copy.
 
 	type Tab = 'spawn' | 'creature' | 'looks' | 'spells' | 'shop' | 'quests' | 'messages'
 
@@ -67,18 +63,14 @@
 	})
 	ed.follow(() => target)
 	const record = $derived(ed.record)
-	$effect(() => {
-		if (record?.readOnly && tab !== 'spawn') tab = 'shop'
-	})
+	const realm = $derived(record?.realm ?? false)
 	const values = $derived(ed.values)
 	const saved = $derived(ed.saved)
 	const changes = $derived(ed.changes)
 	const changeCount = $derived(ed.changeCount)
-	const groups = $derived(record ? fieldGroups(record.columns.map((c) => c.name)) : [])
+	const groups = $derived(record ? fieldGroups(record.columns.map((c) => c.name)).map((g) => ({ ...g, fields: g.fields.map((f) => (realm && f.col === 'skinning_loot_id' ? { ...f, ref: undefined, own: undefined } : f)) })) : [])
 	const columnKind = $derived(new Map((record?.columns ?? []).map((c) => [c.name, c])))
 
-	// What the preview shows: the spawn as it is placed on its tab, else the template's first display
-	// with its equipment, standing.
 	let templateLook = $state<vmangos.LookResult | null>(null)
 	const firstDisplay = $derived.by(() => {
 		for (let i = 1; i <= 4; i++) {
@@ -146,11 +138,14 @@
 		if (!r || changeCount === 0) return
 		void ed.save('Saving the creature', async () => {
 			const before = { ...saved }
-			await SaveCreature(r.entry, r.patch, changes)
+			const result = checkRefused(await SaveCreature(r.entry, r.patch, changes))
+			if (result.live && !(await ed.load(r.entry))) throw new Error('Creature saved, but reading it back failed. Reload before editing again.')
 			forgetCreatureDisplays()
+			forgetCreatureTemplates()
 			ed.markSaved()
 			await engineRef.current?.applyCreatureTemplate(r.entry, values, before)
-			setStatus(`Saved ${values.name} (entry ${r.entry}) to the world database. Restart the world server and the game to see it in the game.`, 10000)
+			ed.note = `Saved ${values.name} (entry ${r.entry}). ${result.live ? 'Live now. Meld clears the local creature cache for the next launch.' : 'Restart the world server and the game to see it in the game.'}${result.skipped?.length ? ` Not written: ${result.skipped.join('; ')}.` : ''}`
+			setStatus(ed.note, 10000)
 		})
 	}
 
@@ -204,6 +199,7 @@
 		try {
 			const entry = await CreateCreature(record.entry, name)
 			forgetCreatureDisplays()
+			forgetCreatureTemplates()
 			copying = false
 			ui.creatureEditor = { key: null, entry }
 			setStatus(`Copied to creature ${entry}, ${name}. Edit it, save, then place it.`, 8000)
@@ -249,7 +245,7 @@
 			{/if}
 		{/snippet}
 		{#snippet actions()}
-			{#if record && !record.readOnly}
+			{#if record}
 				<button disabled={!record || ed.saving} onclick={place} title="Place this creature in the region">Place in world</button>
 				<button disabled={!record || ed.saving || copying} onclick={startCopy} title="Make a new creature with this one's looks, stats, loot and AI">Copy this creature</button>
 				<button disabled={changeCount === 0 || ed.saving} onclick={() => ed.revert()}>Revert</button>
@@ -296,7 +292,7 @@
 			<section class="right">
 				<nav class="tabs">
 					{#if spawn}<button class:on={tab === 'spawn'} onclick={() => (tab = 'spawn')}>This spawn</button>{/if}
-					{#if record && !record.readOnly}
+					{#if record}
 						<button class:on={tab === 'creature'} onclick={() => (tab = 'creature')}>Creature</button>
 						<button class:on={tab === 'looks'} onclick={() => (tab = 'looks')}>Looks</button>
 						<button class:on={tab === 'spells'} onclick={() => (tab = 'spells')}>Spells</button>
@@ -304,15 +300,17 @@
 						<button class:on={tab === 'quests'} onclick={() => (tab = 'quests')}>Quests</button>
 						<button class:on={tab === 'messages'} onclick={() => (tab = 'messages')}>Messages</button>
 					{/if}
-					{#if record?.readOnly}<button class:on={tab === 'shop'} onclick={() => (tab = 'shop')}>Shop</button>{:else}<button onclick={startNew} title="Open the creature guide">New creature</button>{/if}
+					<button onclick={startNew} title="Open the creature guide">New creature</button>
 				</nav>
 
 				<div class="scroll">
 					{#if tab === 'spawn' && spawn}
-						<SpawnFields s={spawn} onswitch={switchTo} />
+						<SpawnFields s={spawn} {realm} onswitch={switchTo} />
 						<p class="dim hint">Changes to this spawn are undo steps and are saved with the region's spawns (File › Save Spawns to Database…). Edit the path in the world: close the editor, then Edit path.</p>
 					{:else if tab === 'spells' || tab === 'shop' || tab === 'quests' || tab === 'messages'}
 						<!-- The Spells, Shop, Quests and Messages tabs stay mounted below, so their unsaved edits survive a tab switch. -->
+					{:else if tab === 'looks' && record && !columnKind.has('display_id1')}
+						<p>More than four displays are not editable in Meld.</p>
 					{:else if tab === 'looks' && record}
 						<div class="slot">
 							<span>A click sets</span>
@@ -324,6 +322,7 @@
 						</div>
 						<DisplayPicker selected={Number(values[slot === 0 ? 'mount_display_id' : `display_id${slot}`]) || 0} onpick={useDisplay} onhover={(d) => (hoveredDisplay = d)} />
 						<h3>Displays</h3>
+						{#if realm}<p>Scales are absolute. Equipment templates are not available on a LyraCore realm.</p>{/if}
 						{#each groups.filter((g) => g.title === 'Looks') as g (g.title)}
 							<TemplateFields fields={g.fields} {values} columns={columnKind} {changes} onset={setField} entry={record.entry} />
 						{/each}
@@ -335,27 +334,27 @@
 					{:else if ed.loading}
 						<p class="dim">Loading the creature…</p>
 					{/if}
-					{#if record?.readOnly && target.entry > 0}
-						<div hidden={tab !== 'shop'}><ShopTab bind:this={shopTab} entry={record.entry} npcFlags={Number(values.npc_flags) || 0} realm={true} onvendorflag={() => {}} bind:dirty={shopDirty} /></div>
-					{:else if record && target.entry > 0}
+					{#if record && target.entry > 0}
 						<div hidden={tab !== 'spells'}>
-							<SpellsTab bind:this={spellsTab} entry={record.entry} onsaved={spellsSaved} bind:dirty={spellsDirty} />
+							<SpellsTab {realm} bind:this={spellsTab} entry={record.entry} onsaved={spellsSaved} bind:dirty={spellsDirty} />
 						</div>
 						<div hidden={tab !== 'shop'}>
-							<ShopTab bind:this={shopTab} entry={record.entry} npcFlags={Number(values.npc_flags) || 0} onvendorflag={() => (values.npc_flags = withBit(values.npc_flags ?? '0', 0x4, true))} bind:dirty={shopDirty} />
+							<ShopTab {realm} bind:this={shopTab} entry={record.entry} npcFlags={Number(values.npc_flags) || 0} onvendorflag={() => (values.npc_flags = withBit(values.npc_flags ?? '0', 0x4, true))} bind:dirty={shopDirty} />
 						</div>
 						<div hidden={tab !== 'quests'}>
-							<QuestsTab
-								bind:this={questsTab}
-								entry={record.entry}
-								name={saved.name || values.name || ''}
-								ready={((Number(values.npc_flags) || 0) & 0x2) !== 0}
-								onquestflag={() => (values.npc_flags = withBit(values.npc_flags ?? '0', 0x2, true))}
-								bind:dirty={questsDirty}
-							/>
+							{#if realm}<p>Quests are not yet supported on a LyraCore realm.</p>{:else}
+								<QuestsTab
+									bind:this={questsTab}
+									entry={record.entry}
+									name={saved.name || values.name || ''}
+									ready={((Number(values.npc_flags) || 0) & 0x2) !== 0}
+									onquestflag={() => (values.npc_flags = withBit(values.npc_flags ?? '0', 0x2, true))}
+									bind:dirty={questsDirty}
+								/>
+							{/if}
 						</div>
 						<div hidden={tab !== 'messages'}>
-							<MessagesTab bind:this={messagesTab} entry={record.entry} onsaved={greetingSaved} bind:dirty={messagesDirty} />
+							{#if realm}<p>Messages are not yet supported on a LyraCore realm.</p>{:else}<MessagesTab bind:this={messagesTab} entry={record.entry} onsaved={greetingSaved} bind:dirty={messagesDirty} />{/if}
 						</div>
 					{/if}
 				</div>

@@ -5,7 +5,7 @@
 	// publish, the spawns, the database editors' Save buttons; `lib/state/saving.ts`), what is being
 	// saved over a moving stripe. The bindings report no progress, so the bar has no percentage; a
 	// publish's log lines show under it. It shows once a save has run for DELAY ms, so a quick save
-	// doesn't flash it, and it takes no clicks, so the dialogs under it (the quit dialog) still work.
+	// doesn't flash it (a save that updates the LyraCore realm shows at once), and it takes no clicks, so the dialogs under it (the quit dialog) still work.
 
 	const DELAY = 400
 
@@ -17,6 +17,10 @@
 			return
 		}
 		if (shown) return
+		if (ui.savingNow) {
+			shown = true
+			return
+		}
 		const timer = setTimeout(() => (shown = true), DELAY)
 		return () => clearTimeout(timer)
 	})

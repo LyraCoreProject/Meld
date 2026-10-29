@@ -400,23 +400,3 @@ func ListLyraItemDisplays(realm *lyracore.Realm, dataDir string) ([]ItemDisplayE
 	sort.Slice(rows, func(i, j int) bool { return rows[i][2] < rows[j][2] })
 	return listItemDisplays(t, rows), nil
 }
-
-// ReadLyraVendorCreature provides the read-only creature summary needed to open its Shop tab.
-func ReadLyraVendorCreature(realm *lyracore.Realm, entry int) (TemplateRecord, error) {
-	t, err := realm.DB.Query(realm.Database, fmt.Sprintf("SELECT * FROM game_creature_template WHERE entry = %d", entry))
-	if err != nil {
-		return TemplateRecord{}, err
-	}
-	if len(t.Rows) != 1 {
-		return TemplateRecord{}, fmt.Errorf("the realm has no creature %d", entry)
-	}
-	record := TemplateRecord{Entry: entry, ReadOnly: true, Columns: []TemplateColumn{}, Values: map[string]string{}}
-	err = t.Each(func(r *stdb.Row) error {
-		record.Values["name"], record.Values["subname"] = r.String("name"), r.String("subname")
-		for _, pair := range [][2]string{{"npc_flags", "npc_flags"}, {"level_min", "level"}, {"level_max", "max_level"}, {"rank", "rank"}, {"display_id1", "display_id"}, {"faction", "faction_template"}} {
-			record.Values[pair[0]] = strconv.FormatUint(r.Uint(pair[1]), 10)
-		}
-		return nil
-	})
-	return record, err
-}

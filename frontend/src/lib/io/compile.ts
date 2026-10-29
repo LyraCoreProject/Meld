@@ -4,7 +4,7 @@ import { ApplySpawnEdits, SaveSQLDialog, SpawnEditSQL, WriteTextFile, RegionMapI
 import { guarded } from './backend'
 import type { Engine } from '../engine/Engine'
 import { editor, prefs, setStatus, ui } from '../state/editor.svelte'
-import { withSaving } from '../state/saving'
+import { withRealmSaving, withSaving } from '../state/saving'
 import { cachedPending } from './regionKey'
 import { floatsToBase64 } from './base64'
 import { mapToTiles } from './vmangosExport'
@@ -21,7 +21,7 @@ import { reloadSpawns } from './region'
  */
 export function saveSpawns(engine: Engine) {
 	return guarded('Save spawns', async () => {
-		const saved = await withSaving('Saving spawns', () => writeSpawns(engine))
+		const saved = await withRealmSaving('Saving spawns', () => writeSpawns(engine))
 		if (saved.text) setStatus(saved.live ? saved.text : `${saved.text} Restart the world server to see them.`, 12000)
 	})
 }
