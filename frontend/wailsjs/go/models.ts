@@ -452,6 +452,7 @@ export namespace main {
 	    }
 	}
 	export class SpellSaved {
+	    live: boolean;
 	    sql: string;
 	    iconAdded: string;
 	    visual: number;
@@ -464,6 +465,7 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.live = source["live"];
 	        this.sql = source["sql"];
 	        this.iconAdded = source["iconAdded"];
 	        this.visual = source["visual"];

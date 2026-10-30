@@ -10,12 +10,7 @@ import (
 	"Meld/internal/mpq"
 )
 
-// The spell editor (#294) edits a spell in both places that hold it. The server reads spells from
-// the world database's spell_template (VMaNGOS keeps no Spell.dbc of its own): a row per spell and
-// client build, the newest build up to the client's (1.12.1, 5875) used. The client draws a spell
-// (its name, icon, tooltip, cast bar and visual) from Spell.dbc, so Save writes the saved row into
-// Spell.dbc in Meld's patch too, keeping the two in step, and a picked icon not yet in SpellIcon.dbc
-// is added there.
+// Read docs/architecture/client.md before changing spell source or client patch rules.
 
 const spellTable = "spell_template"
 
@@ -142,8 +137,7 @@ func ReadSpell(serverRoot, dataDir string, entry int) (SpellRecord, error) {
 	return rec, nil
 }
 
-// spellField is a spell_template value as a Spell.dbc field: a whole number as its 32 bits (a
-// negative one as two's complement, a 64-bit one's low or high half), a float column's as a float.
+// DBC floats use IEEE bits; signed integers use two's complement and u64 fields use two words.
 func spellField(c TemplateColumn, v string, high bool) (uint32, error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -156,14 +150,24 @@ func spellField(c TemplateColumn, v string, high bool) (uint32, error) {
 		}
 		return math.Float32bits(float32(f)), nil
 	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil {
-		return 0, refuse(c.Name, "%s must be a whole number, not %q", c.Name, v)
+	var bits uint64
+	if c.Kind == "uint" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			return 0, refuse(c.Name, "%s must be an unsigned whole number, not %q", c.Name, v)
+		}
+		bits = n
+	} else {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, refuse(c.Name, "%s must be a whole number, not %q", c.Name, v)
+		}
+		bits = uint64(n)
 	}
 	if high {
-		return uint32(uint64(n) >> 32), nil
+		return uint32(bits >> 32), nil
 	}
-	return uint32(n), nil
+	return uint32(bits), nil
 }
 
 // spellClientRow makes spell entry's Spell.dbc record from its spell_template values, over base (a
@@ -282,16 +286,14 @@ func spellIconPathRow(dbc []byte, path string) (int, []byte, error) {
 	return int(maxID + 1), out, err
 }
 
-// SpellSave is what saving a spell writes: the SQL for the world database and the client tables for
-// Meld's patch (Spell.dbc, and SpellIcon.dbc when an icon was added). IconAdded names the icon added.
 type SpellSave struct {
-	SQL       string
-	Files     []mpq.File
-	IconAdded string
-	// VisualAdded says the composer's visual was new rows, not one the client had.
+	Values      map[string]string
+	changes     map[string]string
+	SQL         string
+	Files       []mpq.File
+	IconAdded   string
 	VisualAdded bool
-	// Visual is the spell's visual as saved.
-	Visual int
+	Visual      int
 }
 
 // checkIconName refuses what can't be a name under Interface\Icons.
@@ -302,9 +304,6 @@ func checkIconName(icon string) error {
 	return nil
 }
 
-// PlanSpellSave works out saving changed values (by column) into spell entry's row of build build,
-// icon (a name under Interface\Icons, "" to keep the spell's) and visual (a design from the composer,
-// #361; nil to keep spellVisual1 as values have it), without writing anything.
 func PlanSpellSave(serverRoot, dataDir string, entry, build int, values map[string]string, icon string, visual *VisualDesign) (SpellSave, error) {
 	db, err := openWorld(serverRoot)
 	if err != nil {
@@ -314,6 +313,19 @@ func PlanSpellSave(serverRoot, dataDir string, entry, build int, values map[stri
 	if err != nil {
 		return SpellSave{}, err
 	}
+	_, row, err := readSpellRow(db, cols, entry)
+	if err != nil {
+		return SpellSave{}, err
+	}
+	save, err := planSpellSaveRow(dataDir, entry, cols, row, values, icon, visual)
+	if err != nil {
+		return SpellSave{}, err
+	}
+	save.SQL, err = keyedUpdateSQL(spellTable, "build", cols, entry, build, save.changes)
+	return save, err
+}
+
+func planSpellSaveRow(dataDir string, entry int, cols []TemplateColumn, row, values map[string]string, icon string, visual *VisualDesign) (SpellSave, error) {
 	if v, ok := values["name"]; ok && strings.TrimSpace(v) == "" {
 		return SpellSave{}, refuse("name", "a spell needs a name")
 	}
@@ -354,13 +366,24 @@ func PlanSpellSave(serverRoot, dataDir string, entry, build int, values map[stri
 		save.VisualAdded = len(files) > 0
 		changes["spellVisual1"] = strconv.Itoa(id)
 	}
-	if save.SQL, err = keyedUpdateSQL(spellTable, "build", cols, entry, build, changes); err != nil {
-		return SpellSave{}, err
-	}
-	// The client gets the whole row as it will be, so a spell the two disagreed on agrees again.
-	_, row, err := readSpellRow(db, cols, entry)
-	if err != nil {
-		return SpellSave{}, err
+	for key, value := range changes {
+		var column *TemplateColumn
+		for i := range cols {
+			if cols[i].Name == key {
+				column = &cols[i]
+				break
+			}
+		}
+		if column == nil {
+			return SpellSave{}, refuse(key, "unknown spell column %s", key)
+		}
+		if key == "spellFamilyFlags" || strings.HasPrefix(key, "effectItemType") {
+			if _, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64); err != nil {
+				return SpellSave{}, refuse(key, "%s must be an unsigned 64-bit whole number", key)
+			}
+		} else if _, err := sqlValue(*column, value); err != nil {
+			return SpellSave{}, err
+		}
 	}
 	for k, v := range changes {
 		row[k] = strings.TrimSpace(v)
@@ -375,6 +398,7 @@ func PlanSpellSave(serverRoot, dataDir string, entry, build int, values map[stri
 	}
 	save.Files = append(save.Files, mpq.File{Name: SpellPath, Data: out})
 	save.Visual, _ = strconv.Atoi(row["spellVisual1"])
+	save.Values, save.changes = row, changes
 	return save, nil
 }
 
