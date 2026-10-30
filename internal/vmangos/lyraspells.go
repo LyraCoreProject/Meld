@@ -20,6 +20,12 @@ import (
 	"Meld/internal/stdb"
 )
 
+// LyraCore's Operator Spell Range: the 1.12 initial spellbook packet carries 16-bit spell ids.
+const (
+	lyraSpellFloor = 60000
+	lyraSpellCeil  = 65535
+)
+
 type lyraSpellSourceField struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
@@ -287,12 +293,12 @@ func CreateLyraSpell(realm *lyracore.Realm, dataDir string, base int, starter, n
 	for r := 0; r < client.records; r++ {
 		used[client.u32(r, 0)] = true
 	}
-	entry := uint32(5200500)
-	for entry <= 5999999 && used[entry] {
+	entry := uint32(lyraSpellFloor)
+	for entry <= lyraSpellCeil && used[entry] {
 		entry++
 	}
-	if entry > 5999999 {
-		return SpellCreate{}, refuse("entry", "the Operator Template Range is full")
+	if entry > lyraSpellCeil {
+		return SpellCreate{}, refuse("entry", "the Operator Spell Range is full")
 	}
 	source["entry"], source["name"], source["script_name"] = strconv.FormatUint(uint64(entry), 10), name, ""
 	cols := lyraSpellColumns(source)

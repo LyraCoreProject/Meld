@@ -105,7 +105,7 @@ print(json.dumps([{'create': request['create'], 'spell': {'spell_id': int(source
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Entry != 5200500 || calls != 2 {
+	if created.Entry != 60000 || calls != 2 {
 		t.Fatalf("create: %+v, calls %d", created, calls)
 	}
 	copied, err := parseDBC(created.File.Data)

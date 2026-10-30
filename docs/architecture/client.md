@@ -921,6 +921,6 @@ Realm save and how to retry. Creating a spell reports its id even if the patch w
 SQL spell import and export are unavailable on a Realm. Creature spell lists still call the
 creature reducer. The VMaNGOS path keeps its SQL save and reload behavior.
 
-New spell ids use 5,200,500 through 5,999,999. LyraCore's initial spellbook packet still narrows
-spell ids to 16 bits. Learning these high ids on a Character needs separate protocol work.
+New spell ids come from LyraCore's Operator Spell Range, 60,000 through 65,535. The 1.12 initial
+spellbook packet carries 16-bit spell ids, so a spell a Character learns must stay below 65,536.
 This change does not alter that packet.
