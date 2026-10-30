@@ -58,8 +58,13 @@ func (a *App) SpellRefs(ids []int) (map[int]vmangos.SpellRef, error) {
 	return vmangos.SpellRefs(dataDir, ids)
 }
 
-// ReadSpell reads a spell's spell_template row (the build the server uses), for the spell editor (#294).
+// Reads the full editable source row for the selected Realm or VMaNGOS world.
 func (a *App) ReadSpell(entry int) (vmangos.SpellRecord, error) {
+	if realm, dataDir, err := a.lyraRealmAndData(); err != nil {
+		return vmangos.SpellRecord{}, err
+	} else if realm != nil {
+		return vmangos.ReadLyraSpell(realm, dataDir, entry)
+	}
 	server, dataDir, err := a.serverAndData()
 	if err != nil {
 		return vmangos.SpellRecord{}, err
@@ -67,10 +72,9 @@ func (a *App) ReadSpell(entry int) (vmangos.SpellRecord, error) {
 	return vmangos.ReadSpell(server, dataDir, entry)
 }
 
-// SpellSaved is what SaveSpell wrote: the SQL it ran, the icon it added to SpellIcon.dbc ("" for
-// none), and the spell's visual and whether the composer's was added as new rows; or the value it
-// refused (Refused, with a nil error and nothing written), as TemplateSaved has it.
+// SQL contains VMaNGOS SQL or the Realm reducer arguments.
 type SpellSaved struct {
+	Live        bool                 `json:"live"`
 	SQL         string               `json:"sql"`
 	IconAdded   string               `json:"iconAdded"`
 	Visual      int                  `json:"visual"`
@@ -78,12 +82,28 @@ type SpellSaved struct {
 	Refused     *vmangos.ColumnError `json:"refused,omitempty"`
 }
 
-// SaveSpell writes a spell's changed values (by column), icon (a name under Interface\Icons, "" to
-// keep its own) and visual (the composer's design, nil to keep it) into its spell_template row and has
-// the running world server reload its spells, then writes its whole row into Spell.dbc in Meld's patch
-// (with the icon's and the visual's new rows) without closing anything: at once, or once the game has
-// closed when it runs (#365), so the game has it the next time it starts.
+// Saves the world first; a client patch failure can be retried with Save.
 func (a *App) SaveSpell(entry, build int, values map[string]string, icon string, visual *vmangos.VisualDesign) (SpellSaved, error) {
+	if realm, dataDir, err := a.lyraRealmAndData(); err != nil {
+		return SpellSaved{}, err
+	} else if realm != nil {
+		if a.sandboxed() {
+			return SpellSaved{}, errSandboxed
+		}
+		plan, err := vmangos.SaveLyraSpell(realm, dataDir, entry, build, values, icon, visual)
+		if refused := vmangos.Refused(err); refused != nil {
+			return SpellSaved{Refused: refused}, nil
+		}
+		if err != nil {
+			return SpellSaved{}, err
+		}
+		err = a.saveClientFiles(dataDir, plan.Files)
+		vmangos.ForgetSpells()
+		if err != nil {
+			return SpellSaved{}, fmt.Errorf("the spell is saved in the Realm, but writing patch-4 failed; Save again to retry: %w", err)
+		}
+		return SpellSaved{Live: true, SQL: plan.SQL, IconAdded: plan.IconAdded, Visual: plan.Visual, VisualAdded: plan.VisualAdded}, nil
+	}
 	server, dataDir, err := a.serverForWrite()
 	if err != nil {
 		return SpellSaved{}, err
@@ -107,10 +127,25 @@ func (a *App) SaveSpell(entry, build int, values map[string]string, icon string,
 	return SpellSaved{SQL: plan.SQL, IconAdded: plan.IconAdded, Visual: plan.Visual, VisualAdded: plan.VisualAdded}, nil
 }
 
-// CreateSpell adds a spell named name, a copy of spell base (or, for base 0, made from the starter of
-// that ID), to the world database and the client's Spell.dbc (in Meld's patch, written as SaveSpell
-// writes it, without closing anything), and returns its entry.
+// Returns the new entry even if the subsequent client patch write fails.
 func (a *App) CreateSpell(base int, starter, name string) (int, error) {
+	if realm, dataDir, err := a.lyraRealmAndData(); err != nil {
+		return 0, err
+	} else if realm != nil {
+		if a.sandboxed() {
+			return 0, errSandboxed
+		}
+		plan, err := vmangos.CreateLyraSpell(realm, dataDir, base, starter, name)
+		if err != nil {
+			return 0, err
+		}
+		err = a.saveClientFiles(dataDir, []mpq.File{plan.File})
+		vmangos.ForgetSpells()
+		if err != nil {
+			return plan.Entry, fmt.Errorf("spell %d is saved in the Realm, but writing patch-4 failed; open it by id and Save to retry: %w", plan.Entry, err)
+		}
+		return plan.Entry, nil
+	}
 	server, dataDir, err := a.serverForWrite()
 	if err != nil {
 		return 0, err
@@ -131,9 +166,13 @@ func (a *App) CreateSpell(base int, starter, name string) (int, error) {
 	return plan.Entry, nil
 }
 
-// ExportSpells asks where to save an SQL script of spells and writes their spell_template rows there
-// (#357). Returns the path, or "" if cancelled.
+// Returns the chosen file path, or an empty path after cancellation.
 func (a *App) ExportSpells(entries []int, suggested string) (string, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return "", err
+	} else if realm != nil {
+		return "", fmt.Errorf("SQL spell import and export are unavailable on a Realm; use the spell editor")
+	}
 	server, dataDir, err := a.serverAndData()
 	if err != nil {
 		return "", err
@@ -154,8 +193,12 @@ func (a *App) OpenSpellsDialog() (string, error) {
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "Import Spells", Filters: sqlFilters})
 }
 
-// PlanSpellImport says what importing the spells of the SQL script at path would write.
 func (a *App) PlanSpellImport(path string) (vmangos.SpellImport, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return vmangos.SpellImport{}, err
+	} else if realm != nil {
+		return vmangos.SpellImport{}, fmt.Errorf("SQL spell import and export are unavailable on a Realm; use the spell editor")
+	}
 	server, dataDir, err := a.serverAndData()
 	if err != nil {
 		return vmangos.SpellImport{}, err
@@ -167,11 +210,13 @@ func (a *App) PlanSpellImport(path string) (vmangos.SpellImport, error) {
 	return vmangos.PlanSpellImport(server, dataDir, string(b))
 }
 
-// ImportSpells writes the spells of the SQL script at path into the world database (and has the
-// running world server reload its spells), then each one's record, made from the row the server
-// uses, into Spell.dbc in Meld's patch, as SaveSpell does, with the icons and visuals the script
-// carries that the client lacks (#381). Returns their entries.
+// Realm sessions refuse SQL scripts; VMaNGOS imports also update the client patch.
 func (a *App) ImportSpells(path string) ([]int, error) {
+	if realm, err := a.lyraRealm(); err != nil {
+		return nil, err
+	} else if realm != nil {
+		return nil, fmt.Errorf("SQL spell import and export are unavailable on a Realm; use the spell editor")
+	}
 	server, dataDir, err := a.serverForWrite()
 	if err != nil {
 		return nil, err

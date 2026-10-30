@@ -895,3 +895,32 @@ icon ownership checks and sandbox copies use that name. Reads that exclude Meld'
 include the realm's patch-3. Pending files have separate queues for patch-3 and patch-4, including
 their overlays, so switching the realm setting cannot flush one archive's waiting files into the
 other. A sandbox copies Meld's selected patch and links the other archives.
+
+### LyraCore spell saves
+
+`ReadSpell`, `SaveSpell` and `CreateSpell` use the Realm path when one is configured.
+`MELD_LYRACORE_SPELL_COMPILER` names LyraCore's `native-host/editor-spells.py`. The
+LyraCore launcher sets it. The script builds and runs `lyracore-importer` locally.
+`MELD_LYRACORE_WORLD_SOURCE` can override its default World Source SQLite path.
+The compiler receives no token. Meld reads the Owner Token file for its Realm requests.
+
+The initial editable row comes from the Operator's World Source, selected through build 5875.
+After a save, the Realm's private `game_operator_spell_source` table supplies the full source
+row. Spell.dbc cannot supply server-only flags, bonus coefficients or scripts. The compiled
+Realm tables cannot reconstruct them either. The source and compiled rows commit together.
+
+Meld extracts the four supporting DBC tables from its current client chain and pending files,
+then sends the full source row to the importer as JSON on stdin. It sends the returned JSON
+unchanged to `operator_apply_spell_edits`, including 64-bit numeric fields. Reads use SQL;
+writes use that reducer only. HTTP 530 is a Refusal, and other HTTP failures remain errors.
+The reducer refuses a concurrently allocated id instead of overwriting another spell.
+
+After the Realm commits, Meld writes Spell.dbc and new icon or visual rows into `patch-4.MPQ`.
+It keeps `patch-3.MPQ` for `lyracore client sync`. A failed patch write reports the committed
+Realm save and how to retry. Creating a spell reports its id even if the patch write fails.
+SQL spell import and export are unavailable on a Realm. Creature spell lists still call the
+creature reducer. The VMaNGOS path keeps its SQL save and reload behavior.
+
+New spell ids use 5,200,500 through 5,999,999. LyraCore's initial spellbook packet still narrows
+spell ids to 16 bits. Learning these high ids on a Character needs separate protocol work.
+This change does not alter that packet.
